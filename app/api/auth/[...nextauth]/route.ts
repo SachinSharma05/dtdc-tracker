@@ -11,17 +11,31 @@ export const authOptions = {
       },
       async authorize(credentials) {
         if (!credentials) return null;
+
         const validUser = process.env.ADMIN_USER;
         const validPass = process.env.ADMIN_PASS;
-        if (credentials.username === validUser && credentials.password === validPass) {
-          return { id: 1, name: "Admin", email: validUser };
+
+        if (
+          credentials.username === validUser &&
+          credentials.password === validPass
+        ) {
+          return {
+            id: "1",               // MUST BE STRING
+            name: "Admin",
+            email: validUser
+          };
         }
+
         return null;
       }
     })
   ],
-  session: { strategy: "jwt" },
-  secret: process.env.NEXTAUTH_SECRET
+
+  session: {
+    strategy: "jwt" as const,   // <-- FIX HERE
+  },
+
+  secret: process.env.NEXTAUTH_SECRET,
 };
 
 const handler = NextAuth(authOptions);

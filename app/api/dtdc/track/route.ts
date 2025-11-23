@@ -15,7 +15,12 @@ let tokenCache: { token?: string; expiresAt?: number } = {};
 
 async function getToken(username: string, password: string, staging: boolean) {
   const now = Date.now();
-  if (tokenCache.token && tokenCache.expiresAt! > now) {
+  if (
+    tokenCache.token &&
+    tokenCache.expiresAt &&
+    tokenCache.expiresAt > now &&
+    process.env.NODE_ENV === "development"
+  ) {
     return tokenCache.token;
   }
 
@@ -32,7 +37,12 @@ async function getToken(username: string, password: string, staging: boolean) {
     throw new Error(`Auth failed: ${res.status} ${txt}`);
   }
 
-  const json = await res.json();
+  let json: any = null;
+  try {
+    json = await res.json();
+  } catch {
+    json = { error: "Invalid JSON returned from DTDC" };
+  }
 
   // Based on DTDC spec (PDF) – token is returned on 200
   const token =
@@ -111,10 +121,11 @@ export async function POST(req: Request) {
         const json = await res.json().catch(() => null);
 
         results.push({
-          cn,
-          parsed: parseDTDC(json),
-          raw: json,
-        });
+        cn,
+        parsed: json?.trackHeader ? parseDTDC(json) : null,
+        raw: json,
+        error: json?.error || (json?.trackHeader ? null : "Invalid tracking data")
+      });
       } catch (e: any) {
         results.push({
           cn,
