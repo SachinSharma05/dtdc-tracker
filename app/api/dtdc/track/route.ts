@@ -1,72 +1,25 @@
+// app/api/dtdc/track/route.ts
 import { NextResponse } from "next/server";
+import { db } from "../../../../db";
+import {
+  consignments,
+  trackingEvents,
+  trackingHistory
+} from "../../../../db/schema";
+import { eq, and, sql } from "drizzle-orm";
 
-const AUTH_STAGING =
-  "http://dtdcstagingapi.dtdc.com/dtdc-tracking-api/dtdc-api/api/dtdc/authenticate";
-const AUTH_PROD =
-  "https://blktracksvc.dtdc.com/dtdc-api/api/dtdc/authenticate";
-
-const TRACK_STAGING =
-  "http://dtdcstagingapi.dtdc.com/dtdc-tracking-api/dtdc-api/rest/JSONCnTrk/getTrackDetails";
 const TRACK_PROD =
   "https://blktracksvc.dtdc.com/dtdc-api/rest/JSONCnTrk/getTrackDetails";
 
-// In-memory token cache
-let tokenCache: { token?: string; expiresAt?: number } = {};
-
-async function getToken(username: string, password: string, staging: boolean) {
-  const now = Date.now();
-  if (
-    tokenCache.token &&
-    tokenCache.expiresAt &&
-    tokenCache.expiresAt > now &&
-    process.env.NODE_ENV === "development"
-  ) {
-    return tokenCache.token;
-  }
-
-  const url = staging ? AUTH_STAGING : AUTH_PROD;
-
-  const res = await fetch(
-    `${url}?username=${encodeURIComponent(
-      username
-    )}&password=${encodeURIComponent(password)}`
-  );
-
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Auth failed: ${res.status} ${txt}`);
-  }
-
-  let json: any = null;
-  try {
-    json = await res.json();
-  } catch {
-    json = { error: "Invalid JSON returned from DTDC" };
-  }
-
-  // Based on DTDC spec (PDF) – token is returned on 200
-  const token =
-    json?.token ||
-    json?.Token ||
-    json?.access_token ||
-    json?.apikey ||
-    json; // fallback
-
-  const t = typeof token === "string" ? token : JSON.stringify(token);
-
-  tokenCache = {
-    token: t,
-    expiresAt: now + 15 * 60 * 1000, // 15 min TTL
-  };
-
-  return t;
-}
+const LIVE_API_KEY = process.env.DTDC_LIVE_API_KEY;
 
 function parseDTDC(json: any) {
-  if (!json) return { statusFlag: false, raw: json };
+  if (!json || typeof json !== "object") {
+    return { header: null, timeline: [], raw: json, error: "Invalid DTDC Response" };
+  }
 
   const header = json.trackHeader ?? {};
-  const details = json.trackDetails ?? [];
+  const timeline = json.trackDetails ?? [];
 
   return {
     header: {
@@ -77,60 +30,137 @@ function parseDTDC(json: any) {
       currentStatus: header.strStatus,
       lastUpdatedOn: header.strStatusTransOn,
     },
-    timeline: details,
+    timeline,
     raw: json,
   };
 }
 
 export async function POST(req: Request) {
   try {
-    const { consignments } = await req.json();
-
-    if (!Array.isArray(consignments) || consignments.length === 0) {
-      return NextResponse.json(
-        { error: "consignments must be a non-empty array" },
-        { status: 400 }
-      );
+    if (!LIVE_API_KEY) {
+      return NextResponse.json({ error: "DTDC_LIVE_API_KEY missing" }, { status: 500 });
     }
 
-    const username = process.env.DTDC_USERNAME!;
-    const password = process.env.DTDC_PASSWORD!;
-    const staging =
-      (process.env.DTDC_USE_STAGING ?? "true").toLowerCase() === "true";
+    const { consignments: awbs } = await req.json();
 
-    const token = await getToken(username, password, staging);
-    const trackUrl = staging ? TRACK_STAGING : TRACK_PROD;
+    if (!Array.isArray(awbs) || awbs.length === 0) {
+      return NextResponse.json({ error: "consignments missing" }, { status: 400 });
+    }
 
-    const results = [];
+    const results: any[] = [];
 
-    for (const cn of consignments) {
+    for (const awb of awbs) {
       try {
-        const res = await fetch(trackUrl, {
+        const res = await fetch(TRACK_PROD, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "X-Access-Token": token,
+            "X-Access-Token": LIVE_API_KEY,
           },
           body: JSON.stringify({
             trkType: "cnno",
-            strcnno: cn,
+            strcnno: awb,
             addtnlDtl: "Y",
           }),
         });
 
-        const json = await res.json().catch(() => null);
+        let json;
+        try {
+          json = await res.json();
+        } catch {
+          json = { error: "Invalid JSON returned by DTDC" };
+        }
 
-        results.push({
-        cn,
-        parsed: json?.trackHeader ? parseDTDC(json) : null,
-        raw: json,
-        error: json?.error || (json?.trackHeader ? null : "Invalid tracking data")
-      });
-      } catch (e: any) {
-        results.push({
-          cn,
-          error: e.message,
-        });
+        if (!res.ok) {
+          results.push({ awb, error: json?.message ?? `DTDC error ${res.status}` });
+          continue;
+        }
+
+        const parsed = parseDTDC(json);
+
+        // UPSERT CONSIGNMENT
+        const upsertResult = await db
+          .insert(consignments)
+          .values({
+            awb,
+            lastStatus: parsed.header?.currentStatus ?? null,
+            origin: parsed.header?.origin ?? null,
+            destination: parsed.header?.destination ?? null,
+            bookedOn: parsed.header?.bookedOn ?? null,
+            lastUpdatedOn: parsed.header?.lastUpdatedOn ?? null,
+          })
+          .onConflictDoUpdate({
+            target: consignments.awb,
+            set: {
+              lastStatus: parsed.header?.currentStatus ?? sql`last_status`,
+              origin: parsed.header?.origin ?? sql`origin`,
+              destination: parsed.header?.destination ?? sql`destination`,
+              bookedOn: parsed.header?.bookedOn ?? sql`booked_on`,
+              lastUpdatedOn: parsed.header?.lastUpdatedOn ?? sql`last_updated_on`,
+              updatedAt: sql`NOW()`,
+            },
+          })
+          .returning({ id: consignments.id });
+
+        const consignmentId = upsertResult[0]?.id;
+
+        // INSERT TIMELINE EVENTS
+        for (const t of parsed.timeline ?? []) {
+          const action = t.strAction ?? t.action ?? "";
+          const actionDate = t.strActionDate ?? t.date ?? null;
+          const actionTime = t.strActionTime ?? t.time ?? null;
+          const origin = t.strOrigin ?? t.origin ?? null;
+          const destination = t.strDestination ?? t.destination ?? null;
+          const remarks = t.sTrRemarks ?? t.strRemarks ?? null;
+
+          // Avoid duplicates
+          const exists = await db
+            .select()
+            .from(trackingEvents)
+            .where(
+              and(
+                eq(trackingEvents.consignmentId, consignmentId),
+                eq(trackingEvents.action, action),
+                eq(trackingEvents.actionDate, actionDate),
+                eq(trackingEvents.actionTime, actionTime)
+              )
+            )
+            .limit(1);
+
+          if (exists.length === 0) {
+            await db.insert(trackingEvents).values({
+              consignmentId,
+              action,
+              actionDate,
+              actionTime,
+              origin,
+              destination,
+              remarks,
+            });
+          }
+        }
+
+        // LOG STATUS CHANGES
+        const previous = await db
+          .select({ lastStatus: consignments.lastStatus })
+          .from(consignments)
+          .where(eq(consignments.id, consignmentId))
+          .limit(1);
+
+        const prevStatus = previous[0]?.lastStatus;
+        const newStatus = parsed.header?.currentStatus ?? null;
+
+        if (prevStatus !== newStatus) {
+          await db.insert(trackingHistory).values({
+            consignmentId,
+            oldStatus: prevStatus,
+            newStatus,
+          });
+        }
+
+        results.push({ awb, parsed });
+      } catch (err: any) {
+        results.push({ awb, error: err.message ?? String(err) });
       }
     }
 

@@ -3,185 +3,62 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import dayjs from "dayjs";
 import toast from "react-hot-toast";
+import Link from "next/link";
 
-/**
- * DTDC spec (for reference in code):
- * /mnt/data/TLS DTDC REST TRACKING API_FINAL_V4.docx (1).pdf
- */
-
-type Row = {
-  cn: string;
-  header?: any;
-  timeline?: any[];
-  raw?: any;
-  fetched?: boolean;
-  error?: string;
+type ConsignmentRow = {
+  id?: string;
+  awb: string;
+  last_status?: string;
+  origin?: string;
+  destination?: string;
+  booked_on?: string;
+  last_updated_on?: string;
+  last_action?: string;
+  last_action_date?: string;
+  last_action_time?: string;
 };
 
 const DEFAULT_BATCH_SIZE = 25;
 const DEFAULT_PAGE_SIZE = 50;
 const AUTO_REFRESH_MS = 60 * 60 * 1000; // 60 minutes
 
-const chunkArray = <T,>(arr: T[], size: number) => {
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-};
-
-const STATUS_STYLES: Record<string, string> = {
-  delivered: "bg-green-100 text-green-800",
-  rto: "bg-red-100 text-red-800",
-  "in transit": "bg-yellow-100 text-yellow-800",
-  "out for delivery": "bg-blue-100 text-blue-800",
-  attempted: "bg-orange-100 text-orange-800",
-  held: "bg-gray-200 text-gray-800",
-  unknown: "bg-slate-200 text-slate-800",
-};
-
-function normalizeStatus(s?: string) {
-  if (!s) return "unknown";
-  const v = s.toLowerCase();
-  if (v.includes("deliver")) return "delivered";
-  if (v.includes("rto")) return "rto";
-  if (v.includes("out for")) return "out for delivery";
-  if (v.includes("transit")) return "in transit";
-  if (v.includes("attempt")) return "attempted";
-  if (v.includes("held")) return "held";
-  return v;
-}
-
-function StatusBadge({ status }: { status?: string }) {
-  const key = normalizeStatus(status);
-  const cls = STATUS_STYLES[key] ?? STATUS_STYLES["unknown"];
-  return (
-    <span className={`px-2 py-0.5 text-xs font-medium rounded ${cls}`}>
-      {status ?? "Unknown"}
-    </span>
-  );
-}
-
-/* Minimal inline timeline renderer (style 1) */
-function InlineTimeline({ items }: { items?: any[] }) {
-  if (!items || items.length === 0)
-    return <div className="text-sm text-gray-500">No timeline available</div>;
-
-  const sorted = [...items].sort((a, b) => {
-    const da = `${a.strActionDate ?? ""}${a.strActionTime ?? ""}`;
-    const db = `${b.strActionDate ?? ""}${b.strActionTime ?? ""}`;
-    return db.localeCompare(da);
-  });
-
-  return (
-    <div className="text-sm text-gray-700 py-2">
-      {sorted.map((t: any, i: number) => (
-        <div key={i} className="flex gap-3 border-b border-slate-100 py-2">
-          <div className="w-36 text-xs text-gray-500">
-            {t.strActionDate ?? t.date ?? ""} {t.strActionTime ?? t.time ?? ""}
-          </div>
-          <div className="flex-1">
-            <div className="font-medium">{t.strAction ?? t.action ?? "-"}</div>
-            <div className="text-xs text-gray-500">
-              {t.strOrigin ?? t.origin ?? "-"} → {t.strDestination ?? t.destination ?? "-"}
-            </div>
-            {t.sTrRemarks || t.strRemarks ? (
-              <div className="text-xs text-gray-600 mt-1">Remarks: {t.sTrRemarks ?? t.strRemarks}</div>
-            ) : null}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 export default function TrackPage() {
-  const [rows, setRows] = useState<Row[]>([]);
+  const [loadedAwbs, setLoadedAwbs] = useState<string[]>([]);
+  const [selectedFile, setSelectedFile] = useState("");
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
-  const [batchSize, setBatchSize] = useState(DEFAULT_BATCH_SIZE);
-  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
-  const [page, setPage] = useState(1);
 
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [totalPages, setTotalPages] = useState(1);
+
+  const [rows, setRows] = useState<ConsignmentRow[]>([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
-  const [selectedFile, setSelectedFile] = useState("");
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const autoRef = useRef<number | null>(null);
 
-  // restore from sessionStorage
   useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem("dtdc_rows");
-      if (raw) setRows(JSON.parse(raw));
-      const fn = sessionStorage.getItem("dtdc_file");
-      if (fn) setSelectedFile(fn);
-    } catch {}
+    // load from DB on mount
+    fetchPage();
     startAutoRefresh();
     return () => stopAutoRefresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    try {
-      sessionStorage.setItem("dtdc_rows", JSON.stringify(rows));
-      sessionStorage.setItem("dtdc_file", selectedFile || "");
-    } catch {}
-  }, [rows, selectedFile]);
-
-  // auto-refresh logic
-  async function autoRefreshOnce() {
-    const awbs = rows.map((r) => r.cn).filter(Boolean);
-    if (awbs.length === 0) return;
-    try {
-      const chunks = chunkArray(awbs, batchSize);
-      const updatedBuffer: Row[] = [];
-      for (const batch of chunks) {
-        const res = await fetch("/api/dtdc/track", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ consignments: batch }),
-        });
-        const json = await res.json();
-        for (const item of json.results) {
-          if (item.error) updatedBuffer.push({ cn: item.cn, error: item.error });
-          else {
-            const parsed = item.parsed ?? {};
-            updatedBuffer.push({
-              cn: item.cn,
-              header: parsed.header,
-              timeline: parsed.timeline,
-              raw: item.raw ?? parsed,
-              fetched: true,
-            });
-          }
-        }
-      }
-      const mapNew = new Map(updatedBuffer.map((r) => [r.cn, r]));
-      const changes: string[] = [];
-      const newRows = rows.map((old) => {
-        const nv = mapNew.get(old.cn);
-        if (!nv) return old;
-        const oldStatus = (old.header?.currentStatus ?? old.raw?.strStatus ?? "").toString();
-        const newStatus = (nv.header?.currentStatus ?? nv.raw?.strStatus ?? "").toString();
-        if (oldStatus !== newStatus) {
-          changes.push(`${old.cn}: ${oldStatus || "Unknown"} → ${newStatus || "Unknown"}`);
-        }
-        return { ...old, ...nv };
-      });
-      if (changes.length) changes.forEach((c) => toast.success(`Status changed: ${c}`));
-      else toast("Auto-refresh completed — no changes", { icon: "🔁" });
-      setRows(newRows);
-    } catch (e) {
-      toast.error("Auto-refresh failed: " + String(e));
-    }
-  }
+    // whenever filters/page change, fetch page
+    fetchPage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, pageSize, search, statusFilter, dateFrom, dateTo]);
 
   function startAutoRefresh() {
     stopAutoRefresh();
     autoRef.current = window.setInterval(() => {
-      autoRefreshOnce();
+      fetchPage();
+      toast("Auto-refresh: data reloaded", { icon: "🔁" });
     }, AUTO_REFRESH_MS);
   }
   function stopAutoRefresh() {
@@ -191,7 +68,30 @@ export default function TrackPage() {
     }
   }
 
-  // file input handler with validation
+  async function fetchPage() {
+    try {
+      const params = new URLSearchParams();
+      params.set("page", String(page));
+      params.set("pageSize", String(pageSize));
+      if (search) params.set("search", search);
+      if (statusFilter && statusFilter !== "all") params.set("status", statusFilter);
+      if (dateFrom) params.set("from", dateFrom);
+      if (dateTo) params.set("to", dateTo);
+
+      const res = await fetch(`/api/dtdc/consignments?${params.toString()}`);
+      const json = await res.json();
+      if (json?.error) {
+        toast.error("Failed to load data: " + json.error);
+        return;
+      }
+      setRows(json.items ?? []);
+      setTotalPages(json.totalPages ?? 1);
+    } catch (e) {
+      toast.error("Failed to load data: " + String(e));
+    }
+  }
+
+  // file input
   function handleFileInput(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -211,132 +111,82 @@ export default function TrackPage() {
       const json: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
       const vals = json.map((r) => (r[0] ?? "").toString().trim()).filter(Boolean);
       const unique = [...new Set(vals)];
-      setRows(unique.map((cn) => ({ cn })));
+      setLoadedAwbs(unique);
       setPage(1);
       toast.success(`${unique.length} AWBs loaded`);
     };
     reader.readAsArrayBuffer(file);
   }
 
-  // batching
-  async function fetchBatched() {
-    const awbs = rows.map((r) => r.cn);
-    if (awbs.length === 0) return toast("No AWBs loaded.");
+  // batching helper
+  function chunkArray<T>(arr: T[], size: number) {
+    const chunks: T[][] = [];
+    for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
+    return chunks;
+  }
+
+  // main: send batches to /api/dtdc/track; server writes to DB
+  async function runBatchTracking() {
+    if (loadedAwbs.length === 0) return toast("No AWBs loaded.");
     setLoading(true);
-    setProgress({ done: 0, total: awbs.length });
+    setProgress({ done: 0, total: loadedAwbs.length });
+
     try {
-      const chunks = chunkArray(awbs, batchSize);
-      const buffer: Row[] = [];
-      for (const batch of chunks) {
+      const chunks = chunkArray(loadedAwbs, DEFAULT_BATCH_SIZE);
+      for (const chunk of chunks) {
         const res = await fetch("/api/dtdc/track", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ consignments: batch }),
+          body: JSON.stringify({ consignments: chunk }),
         });
         const json = await res.json();
-        for (const item of json.results) {
-          if (item.error) buffer.push({ cn: item.cn, error: item.error });
-          else {
-            const parsed = item.parsed ?? {};
-            buffer.push({ cn: item.cn, header: parsed.header, timeline: parsed.timeline, raw: item.raw ?? parsed, fetched: true });
-          }
+        if (json?.error) {
+          toast.error("Batch error: " + json.error);
+          // continue to next
         }
-        setProgress((p) => ({ ...p, done: Math.min(p.total, p.done + batch.length) }));
+        // update progress
+        setProgress((p) => ({ ...p, done: Math.min(p.total, p.done + chunk.length) }));
+        // after every chunk, refresh current page to show new DB data
+        await fetchPage();
       }
-      const map = new Map(buffer.map((r) => [r.cn, r]));
-      setRows(rows.map((r) => map.get(r.cn) ?? r));
-      toast.success("Batch tracking finished");
+      toast.success("Batch tracking completed");
     } catch (e) {
       toast.error("Batch tracking failed: " + String(e));
     } finally {
       setLoading(false);
     }
   }
-  function startTracking() {
-    setProgress({ done: 0, total: rows.length });
-    fetchBatched();
-  }
 
-  // retry single
-  async function retrySingle(r: Row) {
-    const cn = r.cn;
-    r.fetched = false;
-    r.error = undefined;
-    setRows([...rows]);
+  // Retry single AWB: call tracking endpoint for single AWB then refresh page
+  async function retrySingle(awb: string) {
     try {
       const res = await fetch("/api/dtdc/track", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ consignments: [cn] }),
+        body: JSON.stringify({ consignments: [awb] }),
       });
       const json = await res.json();
-      const item = json.results?.[0];
-      if (!item || item.error) {
-        r.error = item?.error ?? "Retry failed";
-        setRows([...rows]);
-        toast.error(`Retry failed: ${cn}`);
-        return;
-      }
-      const parsed = item.parsed ?? {};
-      r.header = parsed.header;
-      r.timeline = parsed.timeline;
-      r.raw = parsed.raw ?? item.raw;
-      r.fetched = true;
-      r.error = undefined;
-      setRows([...rows]);
-      toast.success(`Retry success: ${cn}`);
-    } catch (err) {
-      r.error = String(err);
-      setRows([...rows]);
-      toast.error(`Retry failed: ${cn}`);
+      if (json?.error) return toast.error("Retry failed: " + json.error);
+      toast.success("Retry completed");
+      await fetchPage();
+    } catch (e) {
+      toast.error("Retry failed: " + String(e));
     }
   }
 
-  // filters
-  const filtered = useMemo(() => {
-    return rows.filter((r) => {
-      if (search && !r.cn.toLowerCase().includes(search.toLowerCase())) return false;
-      const st = normalizeStatus(r.header?.currentStatus ?? r.raw?.strStatus ?? "");
-      if (statusFilter !== "all" && !st.includes(statusFilter)) return false;
-      const dateStr = r.header?.bookedOn ?? r.header?.lastUpdatedOn ?? r.raw?.strBookedDate ?? r.raw?.strStatusTransOn;
-      if (dateStr) {
-        const d = dayjs(dateStr, ["DDMMYYYY"]);
-        if (dateFrom && d.isBefore(dayjs(dateFrom))) return false;
-        if (dateTo && d.isAfter(dayjs(dateTo))) return false;
-      }
-      return true;
-    });
-  }, [rows, search, statusFilter, dateFrom, dateTo]);
-
-  const snapshot = useMemo(() => {
-    const fetchedList = rows.filter((r) => r.fetched);
-    const total = fetchedList.length;
-    let delivered = 0, rto = 0, pending = 0;
-    fetchedList.forEach((r) => {
-      const s = normalizeStatus(r.header?.currentStatus ?? r.raw?.strStatus);
-      if (s === "delivered") delivered++;
-      else if (s === "rto") rto++;
-      else pending++;
-    });
-    const pct = (n: number) => (total === 0 ? 0 : Math.round((n / total) * 100));
-    return { total, delivered, rto, pending, p_delivered: pct(delivered), p_rto: pct(rto), p_pending: pct(pending) };
-  }, [rows]);
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const pageRows = filtered.slice((page - 1) * pageSize, page * pageSize);
-
+  // Export currently loaded rows (the ones shown in table)
   function exportToExcel() {
-    if (filtered.length === 0) return toast("No rows to export.");
+    if (!rows || rows.length === 0) return toast("No rows to export.");
     const data = [
       ["Consignment", "Status", "Booked", "Last", "Origin", "Dest", "Remarks"],
-      ...filtered.map((r) => [
-        r.cn,
-        r.header?.currentStatus ?? r.raw?.strStatus ?? "",
-        r.header?.bookedOn ?? "",
-        r.header?.lastUpdatedOn ?? "",
-        r.header?.origin ?? "",
-        r.header?.destination ?? "",
-        r.timeline?.[0]?.sTrRemarks ?? "",
+      ...rows.map((r) => [
+        r.awb,
+        r.last_status ?? "",
+        r.booked_on ?? "",
+        r.last_updated_on ?? "",
+        r.origin ?? "",
+        r.destination ?? "",
+        r.last_action ?? "",
       ]),
     ];
     const ws = XLSX.utils.aoa_to_sheet(data);
@@ -353,18 +203,19 @@ export default function TrackPage() {
     toast.success("Export started");
   }
 
-  function removeSelectedFile() {
-    setSelectedFile("");
-    const input = document.getElementById("excelUpload") as HTMLInputElement;
-    if (input) input.value = "";
-    setRows([]);
-    setProgress({ done: 0, total: 0 });
-    toast("Cleared uploaded file");
-  }
-
-  function toggleExpand(cn: string) {
-    setExpanded((s) => ({ ...s, [cn]: !s[cn] }));
-  }
+  // Snapshot: compute from rows (which are DB-backed)
+  const snapshot = useMemo(() => {
+    const total = rows.length;
+    let delivered = 0, rto = 0, pending = 0;
+    rows.forEach((r) => {
+      const s = (r.last_status ?? "").toLowerCase();
+      if (s.includes("deliver")) delivered++;
+      else if (s.includes("rto")) rto++;
+      else pending++;
+    });
+    const pct = (n: number) => (total === 0 ? 0 : Math.round((n / total) * 100));
+    return { total, delivered, rto, pending, p_delivered: pct(delivered), p_rto: pct(rto), p_pending: pct(pending) };
+  }, [rows]);
 
   return (
     <div>
@@ -381,14 +232,14 @@ export default function TrackPage() {
             </button>
             {selectedFile && <span className="text-sm text-gray-700 bg-gray-100 px-2 py-1 rounded border">{selectedFile}</span>}
             {selectedFile && (
-              <button onClick={removeSelectedFile} className="text-red-600 text-sm hover:underline">
+              <button onClick={() => { setSelectedFile(""); setLoadedAwbs([]); }} className="text-red-600 text-sm hover:underline">
                 ✖ Remove
               </button>
             )}
           </div>
 
           <div className="flex flex-wrap gap-3">
-            <button onClick={startTracking} disabled={loading || rows.length === 0} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-60">
+            <button onClick={runBatchTracking} disabled={loading || loadedAwbs.length === 0} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-60">
               {loading ? "Tracking..." : "Track (Batched)"}
             </button>
             <button onClick={exportToExcel} className="px-3 py-2 bg-green-600 text-white rounded hover:bg-green-700">
@@ -397,7 +248,7 @@ export default function TrackPage() {
           </div>
         </div>
 
-        <div className="mt-3 text-sm text-gray-600">Loaded: {rows.length} consignments</div>
+        <div className="mt-3 text-sm text-gray-600">Loaded from file: {loadedAwbs.length} consignments</div>
 
         <div className="mt-3">
           <div className="text-xs text-gray-600 mb-1">
@@ -409,10 +260,10 @@ export default function TrackPage() {
         </div>
       </div>
 
-      {/* Snapshot Summary */}
+      {/* Snapshot */}
       <div className="grid grid-cols-4 gap-4 mb-4">
         <div className="bg-white p-4 rounded shadow">
-          <div className="text-xs text-gray-600">Total</div>
+          <div className="text-xs text-gray-600">Total Shown</div>
           <div className="text-2xl font-bold">{snapshot.total}</div>
         </div>
         <div className="bg-white p-4 rounded shadow">
@@ -432,7 +283,6 @@ export default function TrackPage() {
       {/* Filters */}
       <div className="flex gap-3 mb-4 items-center flex-wrap">
         <input placeholder="Search AWB" value={search} onChange={(e) => setSearch(e.target.value)} className="px-3 py-2 border rounded" />
-
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="px-3 py-2 border rounded">
           <option value="all">All</option>
           <option value="delivered">Delivered</option>
@@ -451,9 +301,7 @@ export default function TrackPage() {
         </div>
 
         <div className="ml-auto flex items-center gap-2">
-          <label className="text-sm">Batch</label>
-          <input type="number" value={batchSize} onChange={(e) => setBatchSize(Math.max(1, Number(e.target.value) || 1))} className="w-20 px-2 py-1 border rounded" />
-          <label className="text-sm">Page</label>
+          <label className="text-sm">Page size</label>
           <input type="number" value={pageSize} onChange={(e) => { setPageSize(Math.max(5, Number(e.target.value) || DEFAULT_PAGE_SIZE)); setPage(1); }} className="w-20 px-2 py-1 border rounded" />
         </div>
       </div>
@@ -463,50 +311,57 @@ export default function TrackPage() {
         <table className="w-full text-sm">
           <thead className="bg-slate-50">
             <tr className="text-left text-xs text-gray-600">
-              <th className="p-3">AWB Number</th>
+              <th className="p-3">AWB</th>
               <th className="p-3">Status</th>
-              <th className="p-3">Booked Date</th>
+              <th className="p-3">Booked</th>
               <th className="p-3">Last Update</th>
               <th className="p-3">Origin</th>
               <th className="p-3">Destination</th>
               <th className="p-3">Retry</th>
               <th className="p-3">Timeline</th>
+              <th className="p-3">Details</th>
             </tr>
           </thead>
           <tbody>
-            {pageRows.map((r) => (
-              <tr key={r.cn} className="border-t">
-                <td className="p-3 align-top">{r.cn}</td>
-                <td className="p-3 align-top"><StatusBadge status={r.header?.currentStatus ?? r.raw?.strStatus} /></td>
-                <td className="p-3 align-top">{r.header?.bookedOn ?? r.raw?.strBookedDate ?? "-"}</td>
-                <td className="p-3 align-top">{r.header?.lastUpdatedOn ?? r.raw?.strStatusTransOn ?? "-"}</td>
-                <td className="p-3 align-top">{r.header?.origin ?? r.raw?.strOrigin ?? "-"}</td>
-                <td className="p-3 align-top">{r.header?.destination ?? r.raw?.strDestination ?? "-"}</td>
+            {rows.map((r) => (
+              <tr key={r.awb} className="border-t">
+                <td className="p-3 align-top">{r.awb}</td>
+                <td className="p-3 align-top"><span className="text-xs">{r.last_status ?? "-"}</span></td>
+                <td className="p-3 align-top">{r.booked_on ?? "-"}</td>
+                <td className="p-3 align-top">{r.last_updated_on ?? "-"}</td>
+                <td className="p-3 align-top">{r.origin ?? "-"}</td>
+                <td className="p-3 align-top">{r.destination ?? "-"}</td>
                 <td className="p-3 align-top">
-                  <button onClick={() => retrySingle(r)} className="px-2 py-1 bg-orange-600 text-white rounded text-xs">Retry</button>
-                  {r.error && <div className="text-xs text-red-600 mt-1">Err</div>}
+                  <button onClick={() => retrySingle(r.awb)} className="px-2 py-1 bg-orange-600 text-white rounded text-xs">Retry</button>
                 </td>
                 <td className="p-3 align-top">
-                  <button onClick={() => toggleExpand(r.cn)} className="px-2 py-1 border rounded text-xs">View Timeline</button>
+                  <details>
+                    <summary className="cursor-pointer text-sm text-blue-600">View Timeline</summary>
+                    <div className="mt-2 text-sm text-gray-700">
+                      <div className="text-xs text-gray-500">Last action: {r.last_action ?? "-"}</div>
+                      <div className="mt-2">
+                        {/* to see full timeline, a separate endpoint could be called; for now show last action and recommend "View full timeline" */}
+                        <em className="text-xs text-gray-500">For full timeline, click the AWB and view details (future feature)</em>
+                      </div>
+                    </div>
+                  </details>
+                </td>
+                <td className="p-3 align-top">
+                  <Link href={`/admin/dtdc/${encodeURIComponent(r.awb)}`}>
+                    <button className="px-2 py-1 bg-blue-600 text-white rounded text-xs">
+                      View Details
+                    </button>
+                  </Link>
                 </td>
               </tr>
             ))}
-
-            {/* Inline expanded rows */}
-            {pageRows.map((r) => expanded[r.cn] ? (
-              <tr key={r.cn + "-expand"} className="bg-slate-50">
-                <td colSpan={8} className="p-3">
-                  <InlineTimeline items={r.timeline ?? r.raw?.trackDetails} />
-                </td>
-              </tr>
-            ) : null)}
           </tbody>
         </table>
       </div>
 
       {/* Pagination */}
       <div className="flex items-center justify-between mt-4">
-        <div className="text-sm text-gray-600">Showing {filtered.length} results — Page {page}/{totalPages}</div>
+        <div className="text-sm text-gray-600">Showing {rows.length} results — Page {page}/{totalPages}</div>
         <div className="flex gap-2">
           <button onClick={() => setPage(1)} disabled={page === 1} className="px-2 py-1 border rounded">First</button>
           <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="px-2 py-1 border rounded">Prev</button>

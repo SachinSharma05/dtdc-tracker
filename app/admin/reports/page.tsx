@@ -1,17 +1,9 @@
-// export default function AdminHome() {
-//   return (
-//     <div className="text-gray-700">
-//       Welcome to the Admin Panel — choose an option from the left sidebar.
-//     </div>
-//   );
-// }
-
 // app/admin/reports/page.tsx
 "use client";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 
-export default function AdminHome() {
+export default function ReportsPage() {
   const [stats, setStats] = useState({ total:0, delivered:0, rto:0, pending:0 });
   const [latest, setLatest] = useState<any[]>([]);
 
