@@ -35,6 +35,7 @@ export default function TrackPage() {
   const [rows, setRows] = useState<ConsignmentRow[]>([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [tatFilter, setTatFilter] = useState("all");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
@@ -204,22 +205,80 @@ export default function TrackPage() {
   }
 
   // Snapshot: compute from rows (which are DB-backed)
-  const snapshot = useMemo(() => {
-    const total = rows.length;
-    let delivered = 0, rto = 0, pending = 0;
-    rows.forEach((r) => {
-      const s = (r.last_status ?? "").toLowerCase();
-      if (s.includes("deliver")) delivered++;
-      else if (s.includes("rto")) rto++;
-      else pending++;
-    });
-    const pct = (n: number) => (total === 0 ? 0 : Math.round((n / total) * 100));
-    return { total, delivered, rto, pending, p_delivered: pct(delivered), p_rto: pct(rto), p_pending: pct(pending) };
-  }, [rows]);
+  // const snapshot = useMemo(() => {
+  //   const total = rows.length;
+  //   let delivered = 0, rto = 0, pending = 0;
+  //   rows.forEach((r) => {
+  //     const s = (r.last_status ?? "").toLowerCase();
+  //     if (s.includes("deliver")) delivered++;
+  //     else if (s.includes("rto")) rto++;
+  //     else pending++;
+  //   });
+  //   const pct = (n: number) => (total === 0 ? 0 : Math.round((n / total) * 100));
+  //   return { total, delivered, rto, pending, p_delivered: pct(delivered), p_rto: pct(rto), p_pending: pct(pending) };
+  // }, [rows]);
+
+  // ----------------------
+  // TAT RULES + CALCULATOR
+  // ----------------------
+  const TAT_RULES: Record<string, number> = {
+    D: 3,
+    M: 5,
+    N: 7,
+    I: 10,
+  };
+
+  // TAT calculation
+  function computeTAT(r: ConsignmentRow) {
+    if (!r.booked_on) return "Unknown";
+
+    const prefix = r.awb?.charAt(0)?.toUpperCase();
+    const allowedDays = TAT_RULES[prefix] ?? 5;
+
+    const age = dayjs().diff(dayjs(r.booked_on), "day");
+
+    if (age > allowedDays + 3) return "Very Critical";
+    if (age > allowedDays) return "Critical";
+    if (age >= allowedDays - 1) return "Warning";
+    return "OK";
+  }
+
+  // --------------------------------------
+  // MOVEMENT DETECTION BASED ON TIMELINE
+  // --------------------------------------
+  function computeMovement(r: ConsignmentRow & { timeline?: any[] }) {
+    if (!r.timeline || r.timeline.length === 0) return "Unknown";
+
+    const events = r.timeline;
+    const last = events[events.length - 1];
+    const prev = events.length > 1 ? events[events.length - 2] : null;
+
+    const lastLocation = last.origin || last.destination || "";
+    const prevLocation = prev ? prev.origin || prev.destination : null;
+
+    const lastScan = dayjs(`${last.actionDate || last.strActionDate} ${last.actionTime || last.strActionTime}`);
+    const hours = dayjs().diff(lastScan, "hour");
+
+    // 1️⃣ Primary rule — location unchanged for multiple scans
+    if (prev && lastLocation === prevLocation) {
+      if (hours >= 72) return "No Movement (72+ hrs)";
+      if (hours >= 48) return "No Movement (48 hrs)";
+      if (hours >= 24) return "No Movement (24 hrs)";
+      return "No Movement";
+    }
+
+    // 2️⃣ Secondary — even if location changed but scan is stale
+    if (hours >= 72) return "Stuck (72+ hrs)";
+    if (hours >= 48) return "Slow (48 hrs)";
+    if (hours >= 24) return "Slow (24 hrs)";
+
+    // Otherwise movement detected
+    return "Moving";
+  }
 
   return (
     <div>
-      <h1 className="text-2xl mb-4 font-bold">Track Consignments</h1>
+      {/* <h1 className="text-2xl mb-4 font-bold">Track Consignments</h1> */}
 
       {/* Upload & controls */}
       <div className="bg-white p-5 rounded shadow mb-6">
@@ -245,6 +304,12 @@ export default function TrackPage() {
             <button onClick={exportToExcel} className="px-3 py-2 bg-green-600 text-white rounded hover:bg-green-700">
               Export Excel
             </button>
+            <button
+              onClick={fetchPage}
+              className="px-3 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+            >
+              🔄 Refresh TAT & Movement
+            </button>
           </div>
         </div>
 
@@ -261,7 +326,7 @@ export default function TrackPage() {
       </div>
 
       {/* Snapshot */}
-      <div className="grid grid-cols-4 gap-4 mb-4">
+      {/* <div className="grid grid-cols-4 gap-4 mb-4">
         <div className="bg-white p-4 rounded shadow">
           <div className="text-xs text-gray-600">Total Shown</div>
           <div className="text-2xl font-bold">{snapshot.total}</div>
@@ -278,7 +343,7 @@ export default function TrackPage() {
           <div className="text-xs text-gray-600">RTO</div>
           <div className="text-xl">{snapshot.rto} ({snapshot.p_rto}%)</div>
         </div>
-      </div>
+      </div> */}
 
       {/* Filters */}
       <div className="flex gap-3 mb-4 items-center flex-wrap">
@@ -298,10 +363,16 @@ export default function TrackPage() {
           <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="px-3 py-2 border rounded" />
           <span className="text-gray-600">To →</span>
           <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="px-3 py-2 border rounded" />
+          <select value={statusFilter} onChange={(e) => setTatFilter(e.target.value)} className="px-3 py-2 border rounded">
+          <option value="all">All</option>
+          <option value="warning">Warning</option>
+          <option value="critical">Critical</option>
+          <option value="very critical">Very Critical</option>
+        </select>
         </div>
 
         <div className="ml-auto flex items-center gap-2">
-          <label className="text-sm">Page size</label>
+          <label className="text-sm">Page</label>
           <input type="number" value={pageSize} onChange={(e) => { setPageSize(Math.max(5, Number(e.target.value) || DEFAULT_PAGE_SIZE)); setPage(1); }} className="w-20 px-2 py-1 border rounded" />
         </div>
       </div>
@@ -317,6 +388,8 @@ export default function TrackPage() {
               <th className="p-3">Last Update</th>
               <th className="p-3">Origin</th>
               <th className="p-3">Destination</th>
+              <th className="p-3">TAT</th>
+              <th className="p-3">Movement</th>
               <th className="p-3">Retry</th>
               <th className="p-3">Timeline</th>
               <th className="p-3">Details</th>
@@ -324,13 +397,53 @@ export default function TrackPage() {
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.awb} className="border-t">
+              <tr
+                  key={r.awb}
+                  className={`border-t ${
+                    computeTAT(r) === "Very Critical" ? "bg-red-50" : ""
+                  }`}
+                >
                 <td className="p-3 align-top">{r.awb}</td>
                 <td className="p-3 align-top"><span className="text-xs">{r.last_status ?? "-"}</span></td>
                 <td className="p-3 align-top">{r.booked_on ?? "-"}</td>
                 <td className="p-3 align-top">{r.last_updated_on ?? "-"}</td>
                 <td className="p-3 align-top">{r.origin ?? "-"}</td>
                 <td className="p-3 align-top">{r.destination ?? "-"}</td>
+                {/* TAT */}
+                <td className="p-3 align-top">
+                  <span
+                    className={
+                      computeTAT(r) === "Very Critical"
+                        ? "text-red-700 font-bold"
+                        : computeTAT(r) === "Critical"
+                        ? "text-orange-600 font-semibold"
+                        : computeTAT(r) === "Warning"
+                        ? "text-yellow-600 font-medium"
+                        : "text-green-600 font-semibold"
+                    }
+                  >
+                    {computeTAT(r)}
+                  </span>
+                </td>
+
+                {/* MOVEMENT USING TIMELINE */}
+                <td className="p-3 align-top">
+                  <span
+                    className={
+                      computeMovement(r).includes("72")
+                        ? "text-red-700 font-bold"
+                        : computeMovement(r).includes("48")
+                        ? "text-orange-600 font-semibold"
+                        : computeMovement(r).includes("24")
+                        ? "text-yellow-600 font-medium"
+                        : computeMovement(r).includes("Moving")
+                        ? "text-green-600 font-semibold"
+                        : "text-gray-600"
+                    }
+                  >
+                    {computeMovement(r)}
+                  </span>
+                </td>
                 <td className="p-3 align-top">
                   <button onClick={() => retrySingle(r.awb)} className="px-2 py-1 bg-orange-600 text-white rounded text-xs">Retry</button>
                 </td>
