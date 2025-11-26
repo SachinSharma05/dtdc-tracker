@@ -337,6 +337,23 @@ export default function TrackPage() {
     return "On Time";
   }
 
+  // maps TAT string -> allowed shadcn badge variant
+function tatVariant(t: string | undefined): "default" | "destructive" | "outline" | "secondary" {
+  if (!t) return "default";
+  if (t === "On Time") return "secondary";
+  if (t === "Warning") return "outline";
+  return "destructive"; // Critical / Very Critical -> destructive
+}
+
+// maps Movement string -> allowed shadcn badge variant
+function movementVariant(m: string | undefined): "default" | "destructive" | "outline" | "secondary" {
+  if (!m) return "default";
+  if (m === "On Time") return "secondary";
+  if (m.includes("Slow")) return "outline";
+  if (m.includes("Stuck") || m.includes("72")) return "destructive";
+  return "default";
+}
+
   // ----------------- Render -----------------
   return (
     <div className="space-y-6 px-4 md:px-2 lg:px-0 py-6">
@@ -469,31 +486,37 @@ export default function TrackPage() {
                       <TableCell>{r.destination ?? "-"}</TableCell>
 
                       <TableCell>
-                        <Badge variant={
-                          tatLabel === "Very Critical"
-                            ? "destructive"
-                            : tatLabel === "Critical"
-                            ? "secondary"
-                            : tatLabel === "Warning"
-                            ? "outline"
-                            : "default"
-                        }>
+                        <Badge
+                          variant={
+                            tatLabel === "Very Critical"
+                              ? "destructive"
+                              : tatLabel === "Critical"
+                              ? "secondary"
+                              : tatLabel === "Warning"
+                              ? "outline"
+                              : "default"
+                          }
+                        >
                           {tatLabel}
                         </Badge>
                       </TableCell>
 
                       <TableCell>
-                        <span className={
-                          movementLabel === "On Time"
-                            ? "text-green-600 font-medium"
-                            : movementLabel.includes("72")
-                            ? "text-red-700 font-bold"
-                            : movementLabel.includes("48")
-                            ? "text-orange-600 font-semibold"
-                            : "text-yellow-600 font-medium"
-                        }>
+                        <Badge
+                          variant={
+                            movementLabel === "On Time"
+                              ? "secondary"
+                              : movementLabel.includes("72")
+                              ? "destructive"
+                              : movementLabel.includes("48")
+                              ? "secondary"
+                              : movementLabel.includes("24")
+                              ? "outline"
+                              : "default"
+                          }
+                        >
                           {movementLabel}
-                        </span>
+                        </Badge>
                       </TableCell>
 
                       <TableCell>
