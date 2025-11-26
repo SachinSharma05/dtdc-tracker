@@ -1,4 +1,4 @@
-// app/api/dtdc/pincode/service/route.ts
+// app/api/dtdc/pincode/route.ts
 import { NextResponse } from "next/server";
 
 export async function GET(req: Request) {
@@ -6,23 +6,28 @@ export async function GET(req: Request) {
   const origin = searchParams.get("origin");
   const dest = searchParams.get("dest");
 
-  if (!origin || !dest)
+  if (!origin || !dest) {
     return NextResponse.json({ error: "origin & dest required" });
-
-  // Fetch token from our own auth API
-  const auth = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL}/api/dtdc/pincode/auth`);
-  const { token } = await auth.json();
+  }
 
   const url = `https://firstmileapi.dtdc.com/dtdc-api/api/custOrder/service/getServiceTypes/${origin}/${dest}`;
+
+  const token = process.env.DTDC_TRACKING_TOKEN;
 
   const res = await fetch(url, {
     headers: {
       "Content-Type": "application/json",
-      "X-Access-Token": token,
+      "X-Access-Token": token!,
     },
   });
 
   const json = await res.json();
 
-  return NextResponse.json(json);
+  return NextResponse.json({
+    raw: json,
+    status: json.status ?? false,
+    message: json.message ?? "",
+    services: json.data ?? [],
+    errorMessage: json.errorMessage ?? null
+  });
 }

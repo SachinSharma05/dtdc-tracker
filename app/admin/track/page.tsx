@@ -1,26 +1,50 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+
+import { useEffect, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import dayjs from "dayjs";
 import toast from "react-hot-toast";
 import Link from "next/link";
+import {
+  Card, CardContent
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from "@/components/ui/table";
+import {
+  Upload, RefreshCw, DownloadCloud
+} from "lucide-react";
 
 type ConsignmentRow = {
-  id?: string;
   awb: string;
-  last_status?: string;
-  origin?: string;
-  destination?: string;
-  booked_on?: string;
-  last_updated_on?: string;
-  last_action?: string;
-  last_action_date?: string;
-  last_action_time?: string;
+  last_status?: string | null;
+  origin?: string | null;
+  destination?: string | null;
+  booked_on?: string | null;
+  last_updated_on?: string | null;
+  last_action?: string | null;
+  timeline?: any[];
+  tat?: string;
+  movement?: string;
 };
 
 const DEFAULT_BATCH_SIZE = 25;
 const DEFAULT_PAGE_SIZE = 50;
-const AUTO_REFRESH_MS = 60 * 60 * 1000; // 60 minutes
+const AUTO_REFRESH_MS = 60 * 60 * 1000;
+const CACHE_NAMESPACE = "dtdc_track_cache_v1";
+const CACHE_TTL_MS = 30 * 60 * 1000;
 
 export default function TrackPage() {
   const [loadedAwbs, setLoadedAwbs] = useState<string[]>([]);
@@ -42,17 +66,13 @@ export default function TrackPage() {
   const autoRef = useRef<number | null>(null);
 
   useEffect(() => {
-    // load from DB on mount
     fetchPage();
     startAutoRefresh();
     return () => stopAutoRefresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    // whenever filters/page change, fetch page
     fetchPage();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, pageSize, search, statusFilter, dateFrom, dateTo]);
 
   function startAutoRefresh() {
@@ -69,8 +89,55 @@ export default function TrackPage() {
     }
   }
 
-  async function fetchPage() {
+  function makeCacheKey(params: any) {
+    return `${CACHE_NAMESPACE}:${params.page}:${params.pageSize}:${params.search}:${params.statusFilter}:${params.tatFilter}:${params.dateFrom}:${params.dateTo}`;
+  }
+
+  function readCache(key: string) {
     try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed?.timestamp || !parsed?.data) return null;
+      if (Date.now() - parsed.timestamp > CACHE_TTL_MS) {
+        localStorage.removeItem(key);
+        return null;
+      }
+      return parsed.data;
+    } catch { return null; }
+  }
+
+  function writeCache(key: string, data: any) {
+    try {
+      localStorage.setItem(key, JSON.stringify({ timestamp: Date.now(), data }));
+    } catch {}
+  }
+
+    // ----------------- Fetch page (with caching + post-filtering) -----------------
+  async function fetchPage(forceRefresh = false) {
+    try {
+      const paramsObj = {
+        page,
+        pageSize,
+        search,
+        statusFilter,
+        tatFilter,
+        dateFrom,
+        dateTo,
+      };
+      const cacheKey = makeCacheKey(paramsObj);
+
+      if (!forceRefresh) {
+        const cached = readCache(cacheKey);
+        if (cached) {
+          let items = cached.items ?? [];
+          items = postFilter(items);
+          setRows(items);
+          setTotalPages(cached.totalPages ?? 1);
+          return;
+        }
+      }
+
       const params = new URLSearchParams();
       params.set("page", String(page));
       params.set("pageSize", String(pageSize));
@@ -85,14 +152,55 @@ export default function TrackPage() {
         toast.error("Failed to load data: " + json.error);
         return;
       }
-      setRows(json.items ?? []);
+
+      let items = json.items ?? [];
+      // cache raw server response
+      writeCache(cacheKey, json);
+
+      // apply client-side post-filtering for exact-search and TAT
+      items = postFilter(items);
+
+      setRows(items);
       setTotalPages(json.totalPages ?? 1);
     } catch (e) {
       toast.error("Failed to load data: " + String(e));
     }
   }
 
-  // file input
+  // ----------------- Client-side post filtering -----------------
+  function postFilter(items: ConsignmentRow[]) {
+    let out = [...items];
+
+    // Exact AWB match when user types a full AWB (>= 10 characters).
+    // Otherwise keep server-side behavior (which may be partial).
+    if (search && search.trim().length > 0) {
+      const q = search.trim();
+      if (q.length >= 10) {
+        out = out.filter((r) => String(r.awb).toLowerCase() === q.toLowerCase());
+      } else {
+        // fallback: keep server results (which already include like matches)
+        out = out.filter((r) => String(r.awb).toLowerCase().includes(q.toLowerCase()));
+      }
+    }
+
+    // TAT filter (client-side using our localComputeTAT fallback)
+    if (tatFilter && tatFilter !== "all") {
+      out = out.filter((r) => {
+        const t = localComputeTAT(r).toLowerCase();
+        return t.includes(tatFilter.toLowerCase());
+      });
+    }
+
+    // Status filter: if 'all' skip, otherwise filter by last_status includes
+    if (statusFilter && statusFilter !== "all") {
+      const sf = statusFilter.toLowerCase();
+      out = out.filter((r) => (r.last_status ?? "").toLowerCase().includes(sf));
+    }
+
+    return out;
+  }
+
+  // ----------------- File upload -----------------
   function handleFileInput(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -114,19 +222,19 @@ export default function TrackPage() {
       const unique = [...new Set(vals)];
       setLoadedAwbs(unique);
       setPage(1);
+      setProgress({ done: 0, total: unique.length });
       toast.success(`${unique.length} AWBs loaded`);
     };
     reader.readAsArrayBuffer(file);
   }
 
-  // batching helper
   function chunkArray<T>(arr: T[], size: number) {
     const chunks: T[][] = [];
     for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
     return chunks;
   }
 
-  // main: send batches to /api/dtdc/track; server writes to DB
+  // ----------------- Batch tracking -----------------
   async function runBatchTracking() {
     if (loadedAwbs.length === 0) return toast("No AWBs loaded.");
     setLoading(true);
@@ -143,12 +251,9 @@ export default function TrackPage() {
         const json = await res.json();
         if (json?.error) {
           toast.error("Batch error: " + json.error);
-          // continue to next
         }
-        // update progress
         setProgress((p) => ({ ...p, done: Math.min(p.total, p.done + chunk.length) }));
-        // after every chunk, refresh current page to show new DB data
-        await fetchPage();
+        await fetchPage(true); // refresh and update cache
       }
       toast.success("Batch tracking completed");
     } catch (e) {
@@ -158,7 +263,7 @@ export default function TrackPage() {
     }
   }
 
-  // Retry single AWB: call tracking endpoint for single AWB then refresh page
+  // ----------------- Retry single -----------------
   async function retrySingle(awb: string) {
     try {
       const res = await fetch("/api/dtdc/track", {
@@ -168,14 +273,14 @@ export default function TrackPage() {
       });
       const json = await res.json();
       if (json?.error) return toast.error("Retry failed: " + json.error);
-      toast.success("Retry completed");
-      await fetchPage();
+      toast.success("Retry completed successfully");
+      await fetchPage(true); // refresh
     } catch (e) {
       toast.error("Retry failed: " + String(e));
     }
   }
 
-  // Export currently loaded rows (the ones shown in table)
+  // ----------------- Export -----------------
   function exportToExcel() {
     if (!rows || rows.length === 0) return toast("No rows to export.");
     const data = [
@@ -204,282 +309,240 @@ export default function TrackPage() {
     toast.success("Export started");
   }
 
-  // Snapshot: compute from rows (which are DB-backed)
-  // const snapshot = useMemo(() => {
-  //   const total = rows.length;
-  //   let delivered = 0, rto = 0, pending = 0;
-  //   rows.forEach((r) => {
-  //     const s = (r.last_status ?? "").toLowerCase();
-  //     if (s.includes("deliver")) delivered++;
-  //     else if (s.includes("rto")) rto++;
-  //     else pending++;
-  //   });
-  //   const pct = (n: number) => (total === 0 ? 0 : Math.round((n / total) * 100));
-  //   return { total, delivered, rto, pending, p_delivered: pct(delivered), p_rto: pct(rto), p_pending: pct(pending) };
-  // }, [rows]);
+  // ----------------- Local fallback computeTAT & computeMovement -----------------
+  const TAT_RULES: Record<string, number> = { D: 3, M: 5, N: 7, I: 10 };
 
-  // ----------------------
-  // TAT RULES + CALCULATOR
-  // ----------------------
-  const TAT_RULES: Record<string, number> = {
-    D: 3,
-    M: 5,
-    N: 7,
-    I: 10,
-  };
-
-  // TAT calculation
-  function computeTAT(r: ConsignmentRow) {
-    if (!r.booked_on) return "Unknown";
-
+  function localComputeTAT(r: ConsignmentRow) {
+    if (r.tat) return r.tat;
+    if (!r.booked_on) return "On Time";
     const prefix = r.awb?.charAt(0)?.toUpperCase();
     const allowedDays = TAT_RULES[prefix] ?? 5;
-
     const age = dayjs().diff(dayjs(r.booked_on), "day");
-
     if (age > allowedDays + 3) return "Very Critical";
     if (age > allowedDays) return "Critical";
-    if (age >= allowedDays - 1) return "Warning";
-    return "OK";
+    if (age >= Math.max(0, allowedDays - 1)) return "Warning";
+    return "On Time";
   }
 
-  // --------------------------------------
-  // MOVEMENT DETECTION BASED ON TIMELINE
-  // --------------------------------------
-  function computeMovement(r: ConsignmentRow & { timeline?: any[] }) {
-    if (!r.timeline || r.timeline.length === 0) return "Unknown";
-
-    const events = r.timeline;
-    const last = events[events.length - 1];
-    const prev = events.length > 1 ? events[events.length - 2] : null;
-
-    const lastLocation = last.origin || last.destination || "";
-    const prevLocation = prev ? prev.origin || prev.destination : null;
-
-    const lastScan = dayjs(`${last.actionDate || last.strActionDate} ${last.actionTime || last.strActionTime}`);
-    const hours = dayjs().diff(lastScan, "hour");
-
-    // 1️⃣ Primary rule — location unchanged for multiple scans
-    if (prev && lastLocation === prevLocation) {
-      if (hours >= 72) return "No Movement (72+ hrs)";
-      if (hours >= 48) return "No Movement (48 hrs)";
-      if (hours >= 24) return "No Movement (24 hrs)";
-      return "No Movement";
-    }
-
-    // 2️⃣ Secondary — even if location changed but scan is stale
+  function localComputeMovement(r: ConsignmentRow) {
+    if (r.movement) return r.movement;
+    if (!r.timeline || r.timeline.length === 0) return "On Time";
+    const last = r.timeline[0];
+    if (!last?.actionDate) return "On Time";
+    const lastTs = new Date(`${last.actionDate}T${last.actionTime ?? "00:00:00"}`).getTime();
+    const hours = Math.floor((Date.now() - lastTs) / (1000 * 60 * 60));
     if (hours >= 72) return "Stuck (72+ hrs)";
     if (hours >= 48) return "Slow (48 hrs)";
     if (hours >= 24) return "Slow (24 hrs)";
-
-    // Otherwise movement detected
-    return "Moving";
+    return "On Time";
   }
 
+  // ----------------- Render -----------------
   return (
-    <div>
-      {/* <h1 className="text-2xl mb-4 font-bold">Track Consignments</h1> */}
+    <div className="space-y-6 px-4 md:px-2 lg:px-0 py-6">
+      {/* Page Title */}
+      <h1 className="text-2xl font-bold mb-1">Track Consignments</h1>
 
-      {/* Upload & controls */}
-      <div className="bg-white p-5 rounded shadow mb-6">
-        <input id="excelUpload" type="file" accept=".xlsx,.xls" onChange={handleFileInput} className="hidden" />
+      {/* Upload / actions card */}
+      <Card>
+        <CardContent className="py-4">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <input id="excelUpload" type="file" accept=".xlsx,.xls" onChange={handleFileInput} className="hidden" />
 
-        <div className="flex items-center justify-between flex-wrap gap-3">
-          <div className="flex items-center gap-3">
-            <button onClick={() => document.getElementById("excelUpload")?.click()} className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700">
-              📤 Upload Excel
-            </button>
-            {selectedFile && <span className="text-sm text-gray-700 bg-gray-100 px-2 py-1 rounded border">{selectedFile}</span>}
-            {selectedFile && (
-              <button onClick={() => { setSelectedFile(""); setLoadedAwbs([]); }} className="text-red-600 text-sm hover:underline">
-                ✖ Remove
-              </button>
-            )}
+              <Button variant="outline" onClick={() => document.getElementById("excelUpload")?.click()}>
+                <Upload className="mr-2" /> Upload Excel
+              </Button>
+
+              {selectedFile && (
+                <>
+                  <span className="px-2 py-1 bg-muted/50 rounded border">{selectedFile}</span>
+                  <Button variant="ghost" size="sm" onClick={() => { setSelectedFile(""); setLoadedAwbs([]); }}>
+                    ✖ Remove
+                  </Button>
+                </>
+              )}
+
+              <span className="text-sm text-muted-foreground">Loaded from file: {loadedAwbs.length} consignments</span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button onClick={runBatchTracking} disabled={loading || loadedAwbs.length === 0}>
+                {loading ? "Tracking..." : "Track (Batched)"}
+              </Button>
+
+              <Button variant="ghost" onClick={exportToExcel}>
+                <DownloadCloud className="mr-2" /> Export Excel
+              </Button>
+
+              <Button variant="secondary" onClick={() => fetchPage(true)}>
+                <RefreshCw className="mr-2" /> Refresh TAT & Movement
+              </Button>
+            </div>
           </div>
 
-          <div className="flex flex-wrap gap-3">
-            <button onClick={runBatchTracking} disabled={loading || loadedAwbs.length === 0} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-60">
-              {loading ? "Tracking..." : "Track (Batched)"}
-            </button>
-            <button onClick={exportToExcel} className="px-3 py-2 bg-green-600 text-white rounded hover:bg-green-700">
-              Export Excel
-            </button>
-            <button
-              onClick={fetchPage}
-              className="px-3 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-            >
-              🔄 Refresh TAT & Movement
-            </button>
+          <div className="mt-4">
+            <Progress value={progress.total ? Math.round((progress.done / progress.total) * 100) : 0} />
+            <div className="text-xs text-muted-foreground mt-1">
+              Progress: {progress.done}/{progress.total} ({progress.total ? Math.round((progress.done / progress.total) * 100) : 0}%)
+            </div>
           </div>
-        </div>
-
-        <div className="mt-3 text-sm text-gray-600">Loaded from file: {loadedAwbs.length} consignments</div>
-
-        <div className="mt-3">
-          <div className="text-xs text-gray-600 mb-1">
-            Progress: {progress.done}/{progress.total} ({progress.total ? Math.round((progress.done / progress.total) * 100) : 0}%)
-          </div>
-          <div className="w-full h-3 bg-slate-200 rounded">
-            <div className="h-3 bg-blue-600 rounded" style={{ width: progress.total ? `${(progress.done / progress.total) * 100}%` : "0%" }} />
-          </div>
-        </div>
-      </div>
-
-      {/* Snapshot */}
-      {/* <div className="grid grid-cols-4 gap-4 mb-4">
-        <div className="bg-white p-4 rounded shadow">
-          <div className="text-xs text-gray-600">Total Shown</div>
-          <div className="text-2xl font-bold">{snapshot.total}</div>
-        </div>
-        <div className="bg-white p-4 rounded shadow">
-          <div className="text-xs text-gray-600">Delivered</div>
-          <div className="text-xl">{snapshot.delivered} ({snapshot.p_delivered}%)</div>
-        </div>
-        <div className="bg-white p-4 rounded shadow">
-          <div className="text-xs text-gray-600">Pending</div>
-          <div className="text-xl">{snapshot.pending} ({snapshot.p_pending}%)</div>
-        </div>
-        <div className="bg-white p-4 rounded shadow">
-          <div className="text-xs text-gray-600">RTO</div>
-          <div className="text-xl">{snapshot.rto} ({snapshot.p_rto}%)</div>
-        </div>
-      </div> */}
+        </CardContent>
+      </Card>
 
       {/* Filters */}
-      <div className="flex gap-3 mb-4 items-center flex-wrap">
-        <input placeholder="Search AWB" value={search} onChange={(e) => setSearch(e.target.value)} className="px-3 py-2 border rounded" />
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="px-3 py-2 border rounded">
-          <option value="all">All</option>
-          <option value="delivered">Delivered</option>
-          <option value="in transit">In Transit</option>
-          <option value="out for delivery">Out For Delivery</option>
-          <option value="attempted">Attempted</option>
-          <option value="held">Held Up</option>
-          <option value="rto">RTO</option>
-        </select>
+      <Card>
+        <CardContent>
+          <div className="flex flex-col md:flex-row gap-3 items-center">
+            <Input placeholder="Search AWB" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} className="w-full md:w-64" />
+            <Select onValueChange={(v) => { setStatusFilter(v); setPage(1); }} value={statusFilter} className="w-48">
+              <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All</SelectItem>
+                <SelectItem value="delivered">Delivered</SelectItem>
+                <SelectItem value="in transit">In Transit</SelectItem>
+                <SelectItem value="out for delivery">Out For Delivery</SelectItem>
+                <SelectItem value="attempted">Attempted</SelectItem>
+                <SelectItem value="held">Held Up</SelectItem>
+                <SelectItem value="rto">RTO</SelectItem>
+              </SelectContent>
+            </Select>
 
-        <div className="flex items-center gap-2 text-sm">
-          <span className="text-gray-600">From →</span>
-          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="px-3 py-2 border rounded" />
-          <span className="text-gray-600">To →</span>
-          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="px-3 py-2 border rounded" />
-          <select value={statusFilter} onChange={(e) => setTatFilter(e.target.value)} className="px-3 py-2 border rounded">
-          <option value="all">All</option>
-          <option value="warning">Warning</option>
-          <option value="critical">Critical</option>
-          <option value="very critical">Very Critical</option>
-        </select>
-        </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">From</span>
+              <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(1); }} />
+              <span className="text-sm text-muted-foreground">To</span>
+              <Input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(1); }} />
+            </div>
 
-        <div className="ml-auto flex items-center gap-2">
-          <label className="text-sm">Page</label>
-          <input type="number" value={pageSize} onChange={(e) => { setPageSize(Math.max(5, Number(e.target.value) || DEFAULT_PAGE_SIZE)); setPage(1); }} className="w-20 px-2 py-1 border rounded" />
-        </div>
-      </div>
+            <Select onValueChange={(v) => { setTatFilter(v); setPage(1); }} value={tatFilter} className="w-48">
+              <SelectTrigger><SelectValue placeholder="TAT" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All</SelectItem>
+                <SelectItem value="warning">Warning</SelectItem>
+                <SelectItem value="critical">Critical</SelectItem>
+                <SelectItem value="very critical">Very Critical</SelectItem>
+              </SelectContent>
+            </Select>
+
+            <div className="ml-auto flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">Page size</span>
+              <Input type="number" value={pageSize} onChange={(e) => { setPageSize(Math.max(5, Number(e.target.value) || DEFAULT_PAGE_SIZE)); setPage(1); }} className="w-20" />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Table */}
-      <div className="bg-white rounded shadow overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50">
-            <tr className="text-left text-xs text-gray-600">
-              <th className="p-3">AWB</th>
-              <th className="p-3">Status</th>
-              <th className="p-3">Booked</th>
-              <th className="p-3">Last Update</th>
-              <th className="p-3">Origin</th>
-              <th className="p-3">Destination</th>
-              <th className="p-3">TAT</th>
-              <th className="p-3">Movement</th>
-              <th className="p-3">Retry</th>
-              <th className="p-3">Timeline</th>
-              <th className="p-3">Details</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr
-                  key={r.awb}
-                  className={`border-t ${
-                    computeTAT(r) === "Very Critical" ? "bg-red-50" : ""
-                  }`}
-                >
-                <td className="p-3 align-top">{r.awb}</td>
-                <td className="p-3 align-top"><span className="text-xs">{r.last_status ?? "-"}</span></td>
-                <td className="p-3 align-top">{r.booked_on ?? "-"}</td>
-                <td className="p-3 align-top">{r.last_updated_on ?? "-"}</td>
-                <td className="p-3 align-top">{r.origin ?? "-"}</td>
-                <td className="p-3 align-top">{r.destination ?? "-"}</td>
-                {/* TAT */}
-                <td className="p-3 align-top">
-                  <span
-                    className={
-                      computeTAT(r) === "Very Critical"
-                        ? "text-red-700 font-bold"
-                        : computeTAT(r) === "Critical"
-                        ? "text-orange-600 font-semibold"
-                        : computeTAT(r) === "Warning"
-                        ? "text-yellow-600 font-medium"
-                        : "text-green-600 font-semibold"
-                    }
-                  >
-                    {computeTAT(r)}
-                  </span>
-                </td>
+      <Card>
+        <CardContent className="p-0">
+          <ScrollArea>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>AWB</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Booked</TableHead>
+                  <TableHead>Last Update</TableHead>
+                  <TableHead>Origin</TableHead>
+                  <TableHead>Destination</TableHead>
+                  <TableHead>TAT</TableHead>
+                  <TableHead>Movement</TableHead>
+                  <TableHead>Timeline</TableHead>
+                  <TableHead>Details</TableHead>
+                  <TableHead>Retry</TableHead>
+                </TableRow>
+              </TableHeader>
 
-                {/* MOVEMENT USING TIMELINE */}
-                <td className="p-3 align-top">
-                  <span
-                    className={
-                      computeMovement(r).includes("72")
-                        ? "text-red-700 font-bold"
-                        : computeMovement(r).includes("48")
-                        ? "text-orange-600 font-semibold"
-                        : computeMovement(r).includes("24")
-                        ? "text-yellow-600 font-medium"
-                        : computeMovement(r).includes("Moving")
-                        ? "text-green-600 font-semibold"
-                        : "text-gray-600"
-                    }
-                  >
-                    {computeMovement(r)}
-                  </span>
-                </td>
-                <td className="p-3 align-top">
-                  <button onClick={() => retrySingle(r.awb)} className="px-2 py-1 bg-orange-600 text-white rounded text-xs">Retry</button>
-                </td>
-                <td className="p-3 align-top">
-                  <details>
-                    <summary className="cursor-pointer text-sm text-blue-600">View Timeline</summary>
-                    <div className="mt-2 text-sm text-gray-700">
-                      <div className="text-xs text-gray-500">Last action: {r.last_action ?? "-"}</div>
-                      <div className="mt-2">
-                        {/* to see full timeline, a separate endpoint could be called; for now show last action and recommend "View full timeline" */}
-                        <em className="text-xs text-gray-500">For full timeline, click the AWB and view details (future feature)</em>
-                      </div>
-                    </div>
-                  </details>
-                </td>
-                <td className="p-3 align-top">
-                  <Link href={`/admin/dtdc/${encodeURIComponent(r.awb)}`}>
-                    <button className="px-2 py-1 bg-blue-600 text-white rounded text-xs">
-                      View Details
-                    </button>
-                  </Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+              <TableBody>
+                {rows.map((r) => {
+                  const tatLabel = localComputeTAT(r);
+                  const movementLabel = localComputeMovement(r);
+
+                  return (
+                    <TableRow key={r.awb} className={tatLabel === "Very Critical" ? "bg-red-50" : ""}>
+                      <TableCell className="font-medium">{r.awb}</TableCell>
+                      <TableCell>{r.last_status ?? "-"}</TableCell>
+                      <TableCell>{r.booked_on ?? "-"}</TableCell>
+                      <TableCell>{r.last_updated_on ?? "-"}</TableCell>
+                      <TableCell>{r.origin ?? "-"}</TableCell>
+                      <TableCell>{r.destination ?? "-"}</TableCell>
+
+                      <TableCell>
+                        <Badge variant={
+                          tatLabel === "Very Critical"
+                            ? "destructive"
+                            : tatLabel === "Critical"
+                            ? "secondary"
+                            : tatLabel === "Warning"
+                            ? "outline"
+                            : "default"
+                        }>
+                          {tatLabel}
+                        </Badge>
+                      </TableCell>
+
+                      <TableCell>
+                        <span className={
+                          movementLabel === "On Time"
+                            ? "text-green-600 font-medium"
+                            : movementLabel.includes("72")
+                            ? "text-red-700 font-bold"
+                            : movementLabel.includes("48")
+                            ? "text-orange-600 font-semibold"
+                            : "text-yellow-600 font-medium"
+                        }>
+                          {movementLabel}
+                        </span>
+                      </TableCell>
+
+                      <TableCell>
+                        <details>
+                          <summary className="cursor-pointer text-primary text-sm">View Timeline</summary>
+                          <div className="mt-2 text-sm">
+                            {r.timeline && r.timeline.length > 0 ? (
+                              r.timeline.map((t: any, i: number) => (
+                                <div key={i} className="mb-2">
+                                  <div className="text-xs text-muted-foreground">{t.actionDate} {t.actionTime}</div>
+                                  <div className="font-medium">{t.action}</div>
+                                  <div className="text-muted-foreground">{t.origin || t.destination}</div>
+                                  {t.remarks && <div className="text-xs text-muted-foreground">{t.remarks}</div>}
+                                </div>
+                              ))
+                            ) : (
+                              <div className="text-xs text-muted-foreground">No timeline available</div>
+                            )}
+                          </div>
+                        </details>
+                      </TableCell>
+
+                      <TableCell>
+                        <Link href={`/admin/dtdc/${encodeURIComponent(r.awb)}`}>
+                          <Button size="sm" variant="outline">View Details</Button>
+                        </Link>
+                      </TableCell>
+
+                      <TableCell>
+                        <Button size="sm" variant="destructive" onClick={() => retrySingle(r.awb)}>Retry</Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </ScrollArea>
+        </CardContent>
+      </Card>
 
       {/* Pagination */}
-      <div className="flex items-center justify-between mt-4">
-        <div className="text-sm text-gray-600">Showing {rows.length} results — Page {page}/{totalPages}</div>
-        <div className="flex gap-2">
-          <button onClick={() => setPage(1)} disabled={page === 1} className="px-2 py-1 border rounded">First</button>
-          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="px-2 py-1 border rounded">Prev</button>
-          <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages} className="px-2 py-1 border rounded">Next</button>
-          <button onClick={() => setPage(totalPages)} disabled={page === totalPages} className="px-2 py-1 border rounded">Last</button>
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-muted-foreground">Showing {rows.length} results — Page {page}/{totalPages}</div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="ghost" onClick={() => setPage(1)} disabled={page === 1}>First</Button>
+          <Button size="sm" variant="ghost" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}>Prev</Button>
+          <div className="px-3 py-1 border rounded">{page}</div>
+          <Button size="sm" variant="ghost" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages}>Next</Button>
+          <Button size="sm" variant="ghost" onClick={() => setPage(totalPages)} disabled={page === totalPages}>Last</Button>
         </div>
       </div>
     </div>
