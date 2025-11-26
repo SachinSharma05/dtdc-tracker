@@ -196,8 +196,8 @@ export async function POST(req: Request) {
             and(
               eq(trackingEvents.consignmentId, consignmentId),
               eq(trackingEvents.action, action),
-              eq(trackingEvents.actionDate, new Date(actionDate)), // FIX
-              eq(trackingEvents.actionTime, actionTime)
+              eq(trackingEvents.actionDate, sql`${actionDate}::date`),  // ✅ FIX
+              eq(trackingEvents.actionTime, sql`${actionTime}::time`)
             )
           )
           .limit(1);
