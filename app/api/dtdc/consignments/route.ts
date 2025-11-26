@@ -141,9 +141,14 @@ export async function GET(req: Request) {
     // group by consignmentId
     const timelineMap: Record<string, any[]> = {};
     for (const t of timelineRows) {
-      if (!timelineMap[t.consignmentId]) timelineMap[t.consignmentId] = [];
-      if (timelineMap[t.consignmentId].length < 2) {
-        timelineMap[t.consignmentId].push({
+      if (!t.consignmentId) continue; // prevent null index
+
+      const id = t.consignmentId;
+
+      if (!timelineMap[id]) timelineMap[id] = [];
+
+      if (timelineMap[id].length < 2) {
+        timelineMap[id].push({
           action: t.action,
           actionDate: t.actionDate,
           actionTime: t.actionTime,
