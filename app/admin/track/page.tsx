@@ -432,7 +432,7 @@ function movementVariant(m: string | undefined): "default" | "destructive" | "ou
               <Input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(1); }} />
             </div>
 
-            <Select onValueChange={(v) => { setTatFilter(v); setPage(1); }} value={tatFilter} className="w-48">
+            <Select onValueChange={(v) => { setTatFilter(v); setPage(1); }} value={tatFilter}>
               <SelectTrigger><SelectValue placeholder="TAT" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All</SelectItem>
