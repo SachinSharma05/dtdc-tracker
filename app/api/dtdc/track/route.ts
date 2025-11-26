@@ -190,17 +190,18 @@ export async function POST(req: Request) {
           const remarks = t.sTrRemarks ?? t.strRemarks ?? null;
 
           const exists = await db
-            .select()
-            .from(trackingEvents)
-            .where(
-              and(
-                eq(trackingEvents.consignmentId, consignmentId),
-                eq(trackingEvents.action, action),
-                eq(trackingEvents.actionDate, actionDate),
-                eq(trackingEvents.actionTime, actionTime)
-              )
+          .select()
+          .from(trackingEvents)
+          .where(
+            and(
+              eq(trackingEvents.consignmentId, consignmentId),
+              eq(trackingEvents.action, action),
+              eq(trackingEvents.actionDate, new Date(actionDate)), // FIX
+              eq(trackingEvents.actionTime, actionTime)
             )
-            .limit(1);
+          )
+          .limit(1);
+
 
           if (exists.length === 0) {
             await db.insert(trackingEvents).values({
