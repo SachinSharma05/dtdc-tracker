@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { ClipboardCheck, Clock, MapPin, RefreshCw } from "lucide-react";
+import { ClipboardCheck, Clock, RefreshCw } from "lucide-react";
 
 // LocalStorage Helpers (unchanged)
 const CACHE_KEY = "dtdc_awb_cache";
@@ -30,6 +30,27 @@ function loadCache() {
 function saveCache(data: any) {
   localStorage.setItem(CACHE_KEY, JSON.stringify(data));
 }
+
+/* ------------------ Helpers that return ONLY allowed shadcn Badge variants ------------------ */
+/* Allowed: "default" | "destructive" | "outline" | "secondary" */
+
+function getTatVariant(t: string | undefined): "default" | "destructive" | "outline" | "secondary" {
+  if (!t) return "default";
+  if (t === "On Time") return "secondary";
+  if (t === "Warning") return "outline";
+  return "destructive"; // Critical / Very Critical -> destructive
+}
+
+function getMovementVariant(m: string | undefined): "default" | "destructive" | "outline" | "secondary" {
+  if (!m) return "default";
+  if (m === "On Time") return "secondary";
+  if (m.includes("72") || m.toLowerCase().includes("stuck")) return "destructive";
+  if (m.includes("48")) return "outline";
+  if (m.includes("24")) return "outline";
+  return "default";
+}
+
+/* ------------------------------------------------------------------------------------------- */
 
 export default function DetailPage({ params }: { params: Promise<{ awb: string }> }) {
   const { awb } = use(params);
@@ -74,6 +95,10 @@ export default function DetailPage({ params }: { params: Promise<{ awb: string }
 
   const { summary, currentStatus, timeline, history, reports, tat, movement, consignment } = data;
 
+  // Build display labels with safe fallbacks
+  const tatLabel = tat ?? "Unknown";
+  const movementLabel = movement ?? "Unknown";
+
   return (
     <div className="space-y-6 px-4 md:px-6 lg:px-8 py-6">
       {/* Title + breadcrumb */}
@@ -109,25 +134,25 @@ export default function DetailPage({ params }: { params: Promise<{ awb: string }
             <div className="flex items-center justify-between w-full">
               <div className="flex items-center gap-3">
                 <Avatar>
-                  <AvatarFallback>{(summary.awb || "").slice(0, 2)}</AvatarFallback>
+                  <AvatarFallback>{(summary?.awb || "").slice(0, 2)}</AvatarFallback>
                 </Avatar>
                 <CardTitle className="text-lg">Summary</CardTitle>
               </div>
 
               <div className="flex items-center gap-2">
-                <Badge variant={tatColor(tat)}>{`TAT: ${tat}`}</Badge>
-                <Badge variant={movementColor(movement)}>{movement}</Badge>
+                <Badge variant={getTatVariant(String(tatLabel))}>{`TAT: ${tatLabel}`}</Badge>
+                <Badge variant={getMovementVariant(String(movementLabel))}>{movementLabel}</Badge>
               </div>
             </div>
           </CardHeader>
 
           <CardContent className="space-y-2">
-            <Row label="AWB" value={summary.awb} />
-            <Row label="Origin" value={summary.origin} />
-            <Row label="Destination" value={summary.destination} />
-            <Row label="Booked On" value={summary.bookedOn} />
-            <Row label="Last Updated" value={summary.lastUpdatedOn} />
-            <Row label="Pieces" value={summary.pieces ?? "-"} />
+            <Row label="AWB" value={summary?.awb} />
+            <Row label="Origin" value={summary?.origin} />
+            <Row label="Destination" value={summary?.destination} />
+            <Row label="Booked On" value={summary?.bookedOn} />
+            <Row label="Last Updated" value={summary?.lastUpdatedOn} />
+            <Row label="Pieces" value={summary?.pieces ?? "-"} />
           </CardContent>
         </Card>
 
@@ -140,14 +165,14 @@ export default function DetailPage({ params }: { params: Promise<{ awb: string }
             <div className="flex items-start gap-3">
               <div>
                 <div className="text-xs text-muted-foreground">Status</div>
-                <div className="font-semibold text-lg">{currentStatus.status ?? "-"}</div>
-                <div className="text-sm text-muted-foreground mt-1">{currentStatus.date} {currentStatus.time}</div>
+                <div className="font-semibold text-lg">{currentStatus?.status ?? "-"}</div>
+                <div className="text-sm text-muted-foreground mt-1">{currentStatus?.date ?? ""} {currentStatus?.time ?? ""}</div>
               </div>
 
               <div className="ml-auto text-right">
                 <div className="text-xs text-muted-foreground">Location</div>
-                <div className="font-medium">{currentStatus.location ?? "-"}</div>
-                {currentStatus.remarks && <div className="text-xs text-muted-foreground mt-1">{currentStatus.remarks}</div>}
+                <div className="font-medium">{currentStatus?.location ?? "-"}</div>
+                {currentStatus?.remarks && <div className="text-xs text-muted-foreground mt-1">{currentStatus.remarks}</div>}
               </div>
             </div>
 
@@ -155,7 +180,7 @@ export default function DetailPage({ params }: { params: Promise<{ awb: string }
 
             <div className="flex gap-2 flex-wrap">
               <Badge variant="outline">Last Scan: {reports?.lastScanLocation ?? "-"}</Badge>
-              <Badge variant={reports?.delivered ? "success" : "default"}>Delivered</Badge>
+              <Badge variant={reports?.delivered ? "secondary" : "default"}>Delivered</Badge>
               <Badge variant={reports?.outForDelivery ? "secondary" : "default"}>OFD</Badge>
               <Badge variant={reports?.rto ? "destructive" : "default"}>RTO</Badge>
             </div>
@@ -172,7 +197,7 @@ export default function DetailPage({ params }: { params: Promise<{ awb: string }
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
                 <div className="text-sm text-muted-foreground">Status Overview</div>
-                <div className="text-sm font-semibold">{summary.currentStatus ?? "-"}</div>
+                <div className="text-sm font-semibold">{summary?.currentStatus ?? "-"}</div>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
@@ -240,11 +265,11 @@ export default function DetailPage({ params }: { params: Promise<{ awb: string }
             <CardTitle>Consignment Info</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
-            <Row label="Origin" value={consignment.origin} />
-            <Row label="Destination" value={consignment.destination} />
-            <Row label="Booked On" value={consignment.bookedOn} />
-            <Row label="Last Updated" value={consignment.lastUpdatedOn} />
-            <Row label="Status" value={consignment.lastStatus} />
+            <Row label="Origin" value={consignment?.origin} />
+            <Row label="Destination" value={consignment?.destination} />
+            <Row label="Booked On" value={consignment?.bookedOn} />
+            <Row label="Last Updated" value={consignment?.lastUpdatedOn} />
+            <Row label="Status" value={consignment?.lastStatus} />
           </CardContent>
         </Card>
 
@@ -306,26 +331,9 @@ function SmallStat({ label, value, positive, negative }: any) {
 }
 
 function toastSmall(msg: string) {
-  // minimal feedback: use browser small toast
   try {
-    // won't crash if navigator is missing
-    // you can replace with react-hot-toast if you prefer
     alert(msg);
   } catch {}
-}
-
-/* -------------------------- helpers (unchanged) ------------------------- */
-
-function tatColor(t: string) {
-  if (t === "On Time") return "success";
-  if (t === "Warning") return "secondary";
-  return "destructive";
-}
-
-function movementColor(m: string) {
-  if (m === "On Time") return "success";
-  if (m?.includes("Slow")) return "secondary";
-  return "default";
 }
 
 /* -------------------------- Loading & Error (shadcn style) ------------------------- */
