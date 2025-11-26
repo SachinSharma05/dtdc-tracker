@@ -412,7 +412,7 @@ function movementVariant(m: string | undefined): "default" | "destructive" | "ou
         <CardContent>
           <div className="flex flex-col md:flex-row gap-3 items-center">
             <Input placeholder="Search AWB" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} className="w-full md:w-64" />
-            <Select onValueChange={(v) => { setStatusFilter(v); setPage(1); }} value={statusFilter} className="w-48">
+            <Select onValueChange={(v) => { setStatusFilter(v); setPage(1); }} value={statusFilter}>
               <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All</SelectItem>
