@@ -43,6 +43,8 @@ type ConsignmentRow = {
   movement?: string;
 };
 
+type StatusFilterType = "all" | "delivered" | "in transit" | "out for delivery" | "attempted" | "held" | "rto" | "pending";
+
 const DEFAULT_BATCH_SIZE = 25;
 const DEFAULT_PAGE_SIZE = 50;
 const AUTO_REFRESH_MS = 60 * 60 * 1000;
@@ -516,7 +518,7 @@ export default function TrackPage() {
             value={statusFilter === "pending" ? "all" : statusFilter}
             onValueChange={(v) => {
               if (v === "pending") return;
-              setStatusFilter(v);
+              setStatusFilter(v as StatusFilterType);
               setPage(1);
             }}
           >
