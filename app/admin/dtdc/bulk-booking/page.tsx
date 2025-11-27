@@ -81,11 +81,9 @@ export default function BulkBookingPage() {
     });
 
     if (parsed.errors.length) {
-      toast({
-        title: "CSV parse error",
-        description: parsed.errors.map((e) => e.message).join(", "),
-        variant: "destructive",
-      });
+      toast.error(
+        `CSV parse error: ${parsed.errors.map((e) => e.message).join(", ")}`
+      );
     }
 
     const rows = parsed.data.map((row, idx) => {
