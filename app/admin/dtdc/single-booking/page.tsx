@@ -30,15 +30,17 @@ export default function SingleBookingPage() {
   }
 
   // Auto-fetch city/state based on pincode
-  async function fetchPincodeDetails(pin: string, type: "origin" | "dest") {
-    if (!pin || pin.length < 6) return;
+  async function fetchPincodeDetails(pin, type) {
+  if (!pin || pin.length < 6) return;
 
-    const res = await fetch(`/api/dtdc/pincode?pin=${pin}`);
+    const res = await fetch(`/api/pincode?pin=${pin}`);
     const json = await res.json();
 
-    if (json.city) {
+    if (json.found) {
       form.setValue(`${type}_city`, json.city);
       form.setValue(`${type}_state`, json.state);
+    } else {
+      toast.error("Invalid pincode");
     }
   }
 

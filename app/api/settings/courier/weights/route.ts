@@ -2,10 +2,14 @@
 import { NextResponse } from "next/server";
 import { db } from "../../../../../db";
 import { courierWeights } from "../../../../../db/schema";
-import { and, gt, lt, or } from "drizzle-orm";
+import { and, gt, lt, or, sql } from "drizzle-orm";
 
 export async function GET() {
-  const rows = await db.select().from(courierWeights).orderBy(courierWeights.min_weight);
+  const rows = await db
+  .select()
+  .from(courierWeights)
+  .orderBy(sql`${courierWeights.min_weight} ASC`);
+
   return NextResponse.json(rows);
 }
 

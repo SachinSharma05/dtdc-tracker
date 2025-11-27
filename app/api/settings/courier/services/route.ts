@@ -2,10 +2,14 @@
 import { NextResponse } from "next/server";
 import { db } from "../../../../../db";
 import { courierServices } from "../../../../../db/schema";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 export async function GET() {
-  const rows = await db.select().from(courierServices).orderBy(courierServices.name);
+  const rows = await db
+  .select()
+  .from(courierServices)
+  .orderBy(sql`${courierServices.name} ASC`);
+
   return NextResponse.json(rows);
 }
 
