@@ -221,8 +221,6 @@ export default function TrackPage() {
       const s =
         (r.last_status ??
         r.last_action ??
-        r.status ??
-        r.current_status ??
         "")
           .toString()
           .toLowerCase();
