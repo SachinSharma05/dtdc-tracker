@@ -58,7 +58,7 @@ export default function CourierSettingsPage() {
 
   // Weights CRUD
   async function addWeight() {
-    if (!wForm.min_weight || !wForm.max_weight || wForm.price === "") return toast({ title: "All fields required", variant: "destructive" });
+    if (!wForm.min_weight || !wForm.max_weight || wForm.price === "") return toast.error("All fields required");
     const res = await fetch("/api/settings/courier/weights", { method: "POST", body: JSON.stringify(wForm) });
     const json = await res.json();
     if (res.ok) {
