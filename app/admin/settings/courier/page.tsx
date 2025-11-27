@@ -45,14 +45,14 @@ export default function CourierSettingsPage() {
     const res = await fetch("/api/settings/courier/services", { method: "POST", body: JSON.stringify(svcForm) });
     const json = await res.json();
     if (res.ok) {
-      toast({ title: "Service created" });
+      toast.success("Service created" );
       setSvcForm({ id: 0, name: "", description: "", base_price: "" });
       fetchAll();
-    } else toast({ title: json.error || "Error", variant: "destructive" });
+    } else toast.error(`Error creating service: ${json.error}`);
   }
   async function deleteService(id: number) {
     await fetch(`/api/settings/courier/services?id=${id}`, { method: "DELETE" });
-    toast({ title: "Deleted" });
+    toast.success("Deleted" );
     fetchAll();
   }
 
@@ -62,32 +62,32 @@ export default function CourierSettingsPage() {
     const res = await fetch("/api/settings/courier/weights", { method: "POST", body: JSON.stringify(wForm) });
     const json = await res.json();
     if (res.ok) {
-      toast({ title: "Weight slab created" });
+      toast.success("Weight slab created");
       setWForm({ id: 0, min_weight: "", max_weight: "", price: "" });
       fetchAll();
-    } else toast({ title: json.error || "Error", variant: "destructive" });
+    } else toast.error(`Error creating service: ${json.error}`);
   }
   async function deleteWeight(id: number) {
     await fetch(`/api/settings/courier/weights?id=${id}`, { method: "DELETE" });
-    toast({ title: "Deleted" });
+    toast.success("Deleted" );
     fetchAll();
   }
 
   // Config
   async function setConfigKV() {
-    if (!cfgKey) return toast({ title: "Key required", variant: "destructive" });
+    if (!cfgKey) return toast.error("Key required");
     // upsert: try PUT first, if 404 then POST
     const put = await fetch("/api/settings/courier/config", { method: "PUT", body: JSON.stringify({ key: cfgKey, value: cfgVal }) });
     if (!put.ok) {
       await fetch("/api/settings/courier/config", { method: "POST", body: JSON.stringify({ key: cfgKey, value: cfgVal }) });
     }
-    toast({ title: "Saved" });
+    toast.success("Saved");
     setCfgKey(""); setCfgVal("");
     fetchAll();
   }
   async function deleteConfigKey(key: string) {
     await fetch(`/api/settings/courier/config?key=${encodeURIComponent(key)}`, { method: "DELETE" });
-    toast({ title: "Deleted" });
+    toast.success("Deleted");
     fetchAll();
   }
 
