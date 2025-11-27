@@ -16,11 +16,6 @@ export default function AdminHome() {
   const [stats, setStats] = useState({ total: 0, delivered: 0, rto: 0, pending: 0 });
   const [latest, setLatest] = useState<any[]>([]);
 
-  useEffect(() => {
-    fetchStats();
-    fetchLatest();
-  }, []);
-
   async function fetchStats() {
     try {
       const res = await fetch("/api/dtdc/stats");
@@ -36,14 +31,20 @@ export default function AdminHome() {
     try {
       const res = await fetch("/api/dtdc/consignments?page=1&pageSize=10&sortBy=created_at&sortOrder=desc");
       const json = await res.json();
+      if (json?.error) return toast.error(json.error);
       setLatest(json.items ?? []);
     } catch (e) {
-      // silent
+      toast.error(String(e));
     }
   }
 
+  useEffect(() => {
+    fetchStats();
+    fetchLatest();
+  }, []);
+
   return (
-    <div className="space-y-6 px-4 md:px-6 lg:px-8 py-6">
+    <div className="space-y-4 px-4 md:px-2 lg:px-0 py-0">
       <div className="flex items-center justify-between gap-4">
         <h1 className="text-2xl font-semibold">Reports & Dashboard</h1>
 
@@ -59,49 +60,62 @@ export default function AdminHome() {
 
       {/* Top stats */}
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
-        <Card>
-          <CardHeader className="flex items-center justify-between">
-            <CardTitle className="text-sm">Total Tracked</CardTitle>
-            <Badge variant="secondary">All</Badge>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{stats.total}</div>
-            <div className="text-xs text-muted-foreground mt-1">Total consignments tracked</div>
-          </CardContent>
-        </Card>
 
-        <Card>
-          <CardHeader className="flex items-center justify-between">
-            <CardTitle className="text-sm">Delivered</CardTitle>
-            <Badge variant="default">Success</Badge>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{stats.delivered}</div>
-            <div className="text-xs text-muted-foreground mt-1">Successfully delivered</div>
-          </CardContent>
-        </Card>
+        {/* Total */}
+        <Link href="/admin/track?status=all">
+          <Card className="hover:shadow-lg cursor-pointer transition">
+            <CardHeader className="flex items-center justify-between">
+              <CardTitle className="text-sm">Total Tracked</CardTitle>
+              <Badge variant="secondary">All</Badge>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{stats.total}</div>
+              <div className="text-xs text-muted-foreground mt-1">Total consignments tracked</div>
+            </CardContent>
+          </Card>
+        </Link>
 
-        <Card>
-          <CardHeader className="flex items-center justify-between">
-            <CardTitle className="text-sm">Pending</CardTitle>
-            <Badge variant="outline">Open</Badge>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{stats.pending}</div>
-            <div className="text-xs text-muted-foreground mt-1">Not yet delivered</div>
-          </CardContent>
-        </Card>
+        {/* Delivered */}
+        <Link href="/admin/track?status=delivered">
+          <Card className="hover:shadow-lg cursor-pointer transition">
+            <CardHeader className="flex items-center justify-between">
+              <CardTitle className="text-sm">Delivered</CardTitle>
+              <Badge variant="default">Success</Badge>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{stats.delivered}</div>
+              <div className="text-xs text-muted-foreground mt-1">Successfully delivered</div>
+            </CardContent>
+          </Card>
+        </Link>
 
-        <Card>
-          <CardHeader className="flex items-center justify-between">
-            <CardTitle className="text-sm">RTO</CardTitle>
-            <Badge variant="destructive">RTO</Badge>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{stats.rto}</div>
-            <div className="text-xs text-muted-foreground mt-1">Returned to origin</div>
-          </CardContent>
-        </Card>
+        {/* Pending */}
+        <Link href="/admin/track?status=pending">
+          <Card className="hover:shadow-lg cursor-pointer transition">
+            <CardHeader className="flex items-center justify-between">
+              <CardTitle className="text-sm">Pending</CardTitle>
+              <Badge variant="outline">Open</Badge>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{stats.pending}</div>
+              <div className="text-xs text-muted-foreground mt-1">Not yet delivered</div>
+            </CardContent>
+          </Card>
+        </Link>
+
+        {/* RTO */}
+        <Link href="/admin/track?status=rto">
+          <Card className="hover:shadow-lg cursor-pointer transition">
+            <CardHeader className="flex items-center justify-between">
+              <CardTitle className="text-sm">RTO</CardTitle>
+              <Badge variant="destructive">RTO</Badge>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{stats.rto}</div>
+              <div className="text-xs text-muted-foreground mt-1">Returned to origin</div>
+            </CardContent>
+          </Card>
+        </Link>
       </div>
 
       {/* Latest consignments */}

@@ -1,4 +1,4 @@
-import { pgTable, serial, text, varchar, timestamp, uuid, date, time } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, varchar, timestamp, uuid, date, time, numeric } from "drizzle-orm/pg-core";
 
 // CONSIGNMENTS
 export const consignments = pgTable("consignments", {
@@ -33,4 +33,23 @@ export const trackingHistory = pgTable("tracking_history", {
   oldStatus: text("old_status"),
   newStatus: text("new_status"),
   changedAt: timestamp("changed_at").defaultNow(),
+});
+
+export const courierServices = pgTable("courier_services", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  description: text("description"),
+  basePrice: numeric("base_price").notNull(),
+});
+
+export const courierWeights = pgTable("courier_weights", {
+  id: serial("id").primaryKey(),
+  minWeight: numeric("min_weight").notNull(),
+  maxWeight: numeric("max_weight").notNull(),
+  price: numeric("price").notNull(),
+});
+
+export const courierSettings = pgTable("courier_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
 });

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import * as XLSX from "xlsx";
 import dayjs from "dayjs";
 import toast from "react-hot-toast";
@@ -26,6 +27,8 @@ import {
 import {
   Upload, RefreshCw, DownloadCloud
 } from "lucide-react";
+import { generateCustomLabel } from "../../utils/pdf/customeLabel";
+import { mergePDFs } from "../../utils/pdf/merge";
 
 type ConsignmentRow = {
   awb: string;
@@ -58,12 +61,31 @@ export default function TrackPage() {
 
   const [rows, setRows] = useState<ConsignmentRow[]>([]);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [statusFilter, setStatusFilter] =
+  useState<"all" | "delivered" | "in transit" | "out for delivery" | "attempted" | "held" | "rto" | "pending">("all");
   const [tatFilter, setTatFilter] = useState("all");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
+  const searchParams = useSearchParams();
+
   const autoRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const s = searchParams.get("status");
+
+    if (s === "delivered") {
+      setStatusFilter("delivered");
+    } else if (s === "pending") {
+      setStatusFilter("pending"); // virtual filter
+    } else if (s === "rto") {
+      setStatusFilter("rto");
+    } else {
+      setStatusFilter("all");
+    }
+
+    setPage(1);
+  }, [searchParams]);
 
   useEffect(() => {
     fetchPage();
@@ -82,6 +104,7 @@ export default function TrackPage() {
       toast("Auto-refresh: data reloaded", { icon: "🔁" });
     }, AUTO_REFRESH_MS);
   }
+
   function stopAutoRefresh() {
     if (autoRef.current) {
       clearInterval(autoRef.current);
@@ -142,7 +165,9 @@ export default function TrackPage() {
       params.set("page", String(page));
       params.set("pageSize", String(pageSize));
       if (search) params.set("search", search);
-      if (statusFilter && statusFilter !== "all") params.set("status", statusFilter);
+      if (statusFilter && statusFilter !== "all" && statusFilter !== "pending") {
+        params.set("status", statusFilter);
+      }
       if (dateFrom) params.set("from", dateFrom);
       if (dateTo) params.set("to", dateTo);
 
@@ -169,32 +194,65 @@ export default function TrackPage() {
 
   // ----------------- Client-side post filtering -----------------
   function postFilter(items: ConsignmentRow[]) {
-    let out = [...items];
+  let out = [...items];
 
-    // Exact AWB match when user types a full AWB (>= 10 characters).
-    // Otherwise keep server-side behavior (which may be partial).
-    if (search && search.trim().length > 0) {
-      const q = search.trim();
-      if (q.length >= 10) {
-        out = out.filter((r) => String(r.awb).toLowerCase() === q.toLowerCase());
-      } else {
-        // fallback: keep server results (which already include like matches)
-        out = out.filter((r) => String(r.awb).toLowerCase().includes(q.toLowerCase()));
-      }
+  // AWB search
+  if (search && search.trim().length > 0) {
+    const q = search.trim();
+    if (q.length >= 10) {
+      out = out.filter((r) => String(r.awb).toLowerCase() === q.toLowerCase());
+    } else {
+      out = out.filter((r) => String(r.awb).toLowerCase().includes(q.toLowerCase()));
+    }
+  }
+
+  // TAT filter
+  if (tatFilter && tatFilter !== "all") {
+    out = out.filter((r) => {
+      const t = localComputeTAT(r).toLowerCase();
+      return t.includes(tatFilter.toLowerCase());
+    });
+  }
+
+  // --- Special rule for PENDING ---
+  if (statusFilter === "pending") {
+    out = out.filter((r) => {
+      // Normalize all possible status sources
+      const s =
+        (r.last_status ??
+        r.last_action ??
+        r.status ??
+        r.current_status ??
+        "")
+          .toString()
+          .toLowerCase();
+
+      // Block delivered
+      const isDelivered =
+        s.includes("deliver") ||
+        s.includes("dlvd") ||
+        s.includes("delv");
+
+      // Block rto / returned
+      const isRto =
+        s.includes("rto") ||
+        s.includes("rtd") ||
+        s.includes("return") ||
+        s.includes("returned") ||
+        s.includes("to origin");
+
+      return !isDelivered && !isRto;
+    });
+
+      return out;
     }
 
-    // TAT filter (client-side using our localComputeTAT fallback)
-    if (tatFilter && tatFilter !== "all") {
-      out = out.filter((r) => {
-        const t = localComputeTAT(r).toLowerCase();
-        return t.includes(tatFilter.toLowerCase());
-      });
-    }
-
-    // Status filter: if 'all' skip, otherwise filter by last_status includes
+    // Normal status filter
     if (statusFilter && statusFilter !== "all") {
       const sf = statusFilter.toLowerCase();
-      out = out.filter((r) => (r.last_status ?? "").toLowerCase().includes(sf));
+      out = out.filter((r) =>
+        (r.last_status ?? "").toLowerCase().includes(sf)
+      );
     }
 
     return out;
@@ -337,237 +395,386 @@ export default function TrackPage() {
     return "On Time";
   }
 
-  // maps TAT string -> allowed shadcn badge variant
-function tatVariant(t: string | undefined): "default" | "destructive" | "outline" | "secondary" {
-  if (!t) return "default";
-  if (t === "On Time") return "secondary";
-  if (t === "Warning") return "outline";
-  return "destructive"; // Critical / Very Critical -> destructive
-}
-
-// maps Movement string -> allowed shadcn badge variant
-function movementVariant(m: string | undefined): "default" | "destructive" | "outline" | "secondary" {
-  if (!m) return "default";
-  if (m === "On Time") return "secondary";
-  if (m.includes("Slow")) return "outline";
-  if (m.includes("Stuck") || m.includes("72")) return "destructive";
-  return "default";
-}
+  // Mapping sortable columns
+  function colKey(label: string) {
+    const map: any = {
+      "AWB": "awb",
+      "Status": "last_status",
+      "Booked": "booked_on",
+      "Last Update": "last_updated_on",
+      "Origin": "origin",
+      "Destination": "destination",
+    };
+    return map[label] || label;
+  }
 
   // ----------------- Render -----------------
   return (
-    <div className="space-y-6 px-4 md:px-2 lg:px-0 py-6">
-      {/* Page Title */}
-      <h1 className="text-2xl font-bold mb-1">Track Consignments</h1>
+  <div className="space-y-4 px-4 md:px-2 lg:px-0 py-0">
 
-      {/* Upload / actions card */}
-      <Card>
-        <CardContent className="py-4">
-          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <input id="excelUpload" type="file" accept=".xlsx,.xls" onChange={handleFileInput} className="hidden" />
+    {/* Page Title */}
+    <div>
+      <h1 className="text-2xl font-bold tracking-tight">Track Consignments</h1>
+      <p className="text-sm text-muted-foreground mt-1">
+        Search, filter, manage, export & analyze your tracking data.
+      </p>
+    </div>
 
-              <Button variant="outline" onClick={() => document.getElementById("excelUpload")?.click()}>
-                <Upload className="mr-2" /> Upload Excel
-              </Button>
+    {/* Upload Card */}
+    <Card className="shadow-sm border">
+      <CardContent className="py-4">
+        <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <input id="excelUpload" type="file" accept=".xlsx,.xls" onChange={handleFileInput} className="hidden" />
 
-              {selectedFile && (
-                <>
-                  <span className="px-2 py-1 bg-muted/50 rounded border">{selectedFile}</span>
-                  <Button variant="ghost" size="sm" onClick={() => { setSelectedFile(""); setLoadedAwbs([]); }}>
-                    ✖ Remove
-                  </Button>
-                </>
+            <Button variant="outline" onClick={() => document.getElementById("excelUpload")?.click()}>
+              <Upload className="mr-2 h-4 w-4" /> Upload Excel
+            </Button>
+
+            {selectedFile && (
+              <>
+                <span className="px-2 py-1 bg-muted/50 rounded border text-xs">
+                  {selectedFile}
+                </span>
+                <Button variant="ghost" size="sm" onClick={() => { setSelectedFile(""); setLoadedAwbs([]); }}>
+                  ✖ Remove
+                </Button>
+              </>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Button onClick={runBatchTracking} disabled={loading || loadedAwbs.length === 0}>
+              {loading ? "Tracking..." : "Track (Batched)"}
+            </Button>
+
+            <Button variant="outline" onClick={exportToExcel}>
+              <DownloadCloud className="mr-2 h-4 w-4" /> Export All
+            </Button>
+
+            <Button variant="secondary" onClick={() => fetchPage(true)}>
+              <RefreshCw className="mr-2 h-4 w-4" /> Refresh
+            </Button>
+
+            <Button
+              variant="outline"
+              onClick={() => {
+                if (!rows.length) return toast("No rows to export.");
+                // export filtered rows only
+                const data = [
+                  ["AWB", "Status", "Booked", "Last", "Origin", "Dest", "Remarks"],
+                  ...rows.map((r) => [
+                    r.awb,
+                    r.last_status ?? "",
+                    r.booked_on ?? "",
+                    r.last_updated_on ?? "",
+                    r.origin ?? "",
+                    r.destination ?? "",
+                    r.last_action ?? "",
+                  ]),
+                ];
+                const ws = XLSX.utils.aoa_to_sheet(data);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Filtered");
+                const out = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+                const blob = new Blob([out]);
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `filtered-tracking-${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.xlsx`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+            >
+              Export Filtered
+            </Button>
+
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <Progress value={progress.total ? Math.round((progress.done / progress.total) * 100) : 0} />
+          <div className="text-xs text-muted-foreground mt-1">
+            Progress: {progress.done}/{progress.total} (
+            {progress.total ? Math.round((progress.done / progress.total) * 100) : 0}%)
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+
+    {/* Filters */}
+    <Card className="shadow-sm border top-16 z-30 backdrop-blur bg-white/95">
+      <CardContent>
+        <div className="flex flex-col md:flex-row gap-3 items-center">
+
+          <Input
+            placeholder="Search AWB"
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+            className="w-full md:w-64"
+          />
+
+          <Select
+            value={statusFilter === "pending" ? "all" : statusFilter}
+            onValueChange={(v) => {
+              if (v === "pending") return;
+              setStatusFilter(v);
+              setPage(1);
+            }}
+          >
+            <SelectTrigger className="w-40">
+              <SelectValue placeholder="Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="delivered">Delivered</SelectItem>
+              <SelectItem value="in transit">In Transit</SelectItem>
+              <SelectItem value="out for delivery">Out For Delivery</SelectItem>
+              <SelectItem value="attempted">Attempted</SelectItem>
+              <SelectItem value="held">Held Up</SelectItem>
+              <SelectItem value="rto">RTO</SelectItem>
+            </SelectContent>
+          </Select>
+
+          {/* Date Filters */}
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">From</span>
+            <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(1); }} />
+
+            <span className="text-sm text-muted-foreground">To</span>
+            <Input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(1); }} />
+          </div>
+
+          {/* TAT */}
+          <Select value={tatFilter} onValueChange={(v) => { setTatFilter(v); setPage(1); }}>
+            <SelectTrigger className="w-40"><SelectValue placeholder="TAT" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="warning">Warning</SelectItem>
+              <SelectItem value="critical">Critical</SelectItem>
+              <SelectItem value="very critical">Very Critical</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">Page size</span>
+            <Input
+              type="number"
+              value={pageSize}
+              onChange={(e) => { setPageSize(Math.max(5, Number(e.target.value))); setPage(1); }}
+              className="w-20"
+            />
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+
+    {/* Table */}
+    <Card className="shadow-sm border">
+      <CardContent className="p-0">
+        <ScrollArea>
+          <Table className="text-sm">
+            <TableHeader className="bg-slate-50 sticky top-0 z-20">
+              <TableRow>
+
+                {/* --- Sortable columns --- */}
+                {[
+                  "AWB",
+                  "Status",
+                  "Booked",
+                  "Last Update",
+                  "Origin",
+                  "Destination",
+                ].map((col) => (
+                  <TableHead
+                    key={col}
+                    className="cursor-pointer select-none hover:bg-muted/40"
+                    onClick={() => {
+                      setRows([...rows].sort((a: any, b: any) =>
+                        (a[colKey(col)] ?? "").localeCompare(b[colKey(col)] ?? "")
+                      ));
+                    }}
+                  >
+                    {col} ▲▼
+                  </TableHead>
+                ))}
+
+                <TableHead>TAT</TableHead>
+                <TableHead>Movement</TableHead>
+                <TableHead>Timeline</TableHead>
+                <TableHead></TableHead>
+                <TableHead></TableHead>
+
+              </TableRow>
+            </TableHeader>
+
+            <TableBody>
+              {rows.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={12} className="text-center py-6 text-muted-foreground">
+                    No results found for selected filters.
+                  </TableCell>
+                </TableRow>
               )}
 
-              <span className="text-sm text-muted-foreground">Loaded from file: {loadedAwbs.length} consignments</span>
-            </div>
+              {rows.map((r) => {
+                const tatLabel = localComputeTAT(r);
+                const movementLabel = localComputeMovement(r);
 
-            <div className="flex items-center gap-2">
-              <Button onClick={runBatchTracking} disabled={loading || loadedAwbs.length === 0}>
-                {loading ? "Tracking..." : "Track (Batched)"}
-              </Button>
+                return (
+                  <TableRow
+                    key={r.awb}
+                    className={`${tatLabel === "Very Critical" ? "bg-red-50" : ""} hover:bg-muted/40 transition`}
+                  >
+                    <TableCell className="font-semibold">{r.awb}</TableCell>
+                    <TableCell>{r.last_status ?? "-"}</TableCell>
+                    <TableCell>{r.booked_on ?? "-"}</TableCell>
+                    <TableCell>{r.last_updated_on ?? "-"}</TableCell>
+                    <TableCell>{r.origin ?? "-"}</TableCell>
+                    <TableCell>{r.destination ?? "-"}</TableCell>
 
-              <Button variant="ghost" onClick={exportToExcel}>
-                <DownloadCloud className="mr-2" /> Export Excel
-              </Button>
+                    {/* Critical TAT Highlight */}
+                    <TableCell>
+                      <Badge
+                        variant={
+                          tatLabel === "Very Critical"
+                            ? "destructive"
+                            : tatLabel === "Critical"
+                            ? "secondary"
+                            : tatLabel === "Warning"
+                            ? "outline"
+                            : "default"
+                        }
+                      >
+                        {tatLabel}
+                      </Badge>
+                    </TableCell>
 
-              <Button variant="secondary" onClick={() => fetchPage(true)}>
-                <RefreshCw className="mr-2" /> Refresh TAT & Movement
-              </Button>
-            </div>
-          </div>
+                    <TableCell>
+                      <Badge
+                        variant={
+                          movementLabel === "On Time"
+                            ? "secondary"
+                            : movementLabel.includes("72")
+                            ? "destructive"
+                            : movementLabel.includes("48")
+                            ? "secondary"
+                            : movementLabel.includes("24")
+                            ? "outline"
+                            : "default"
+                        }
+                      >
+                        {movementLabel}
+                      </Badge>
+                    </TableCell>
 
-          <div className="mt-4">
-            <Progress value={progress.total ? Math.round((progress.done / progress.total) * 100) : 0} />
-            <div className="text-xs text-muted-foreground mt-1">
-              Progress: {progress.done}/{progress.total} ({progress.total ? Math.round((progress.done / progress.total) * 100) : 0}%)
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+                    <TableCell>
+                      <details>
+                        <summary className="cursor-pointer text-primary text-sm">Timeline</summary>
+                        <div className="mt-2 text-xs">
+                          {r.timeline?.length ? (
+                            r.timeline.map((t: any, i: number) => (
+                              <div key={i} className="mb-2">
+                                <div className="text-xs text-muted-foreground">{t.actionDate} {t.actionTime}</div>
+                                <div className="font-medium">{t.action}</div>
+                                <div className="text-muted-foreground">{t.origin || t.destination}</div>
+                                {t.remarks && <div className="text-xs text-muted-foreground">{t.remarks}</div>}
+                              </div>
+                            ))
+                          ) : (
+                            <div className="text-xs text-muted-foreground">No timeline available</div>
+                          )}
+                        </div>
+                      </details>
+                    </TableCell>
 
-      {/* Filters */}
-      <Card>
-        <CardContent>
-          <div className="flex flex-col md:flex-row gap-3 items-center">
-            <Input placeholder="Search AWB" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} className="w-full md:w-64" />
-            <Select onValueChange={(v) => { setStatusFilter(v); setPage(1); }} value={statusFilter}>
-              <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All</SelectItem>
-                <SelectItem value="delivered">Delivered</SelectItem>
-                <SelectItem value="in transit">In Transit</SelectItem>
-                <SelectItem value="out for delivery">Out For Delivery</SelectItem>
-                <SelectItem value="attempted">Attempted</SelectItem>
-                <SelectItem value="held">Held Up</SelectItem>
-                <SelectItem value="rto">RTO</SelectItem>
-              </SelectContent>
-            </Select>
+                    {/* PDF Label Button */}
+                    <TableCell>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={async () => {
+                          try {
+                            // STEP 1: Fetch DTDC Label
+                            const res = await fetch("/api/dtdc/label", {
+                              method: "POST",
+                              body: JSON.stringify({ awb: r.awb }),
+                            });
 
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">From</span>
-              <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(1); }} />
-              <span className="text-sm text-muted-foreground">To</span>
-              <Input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(1); }} />
-            </div>
+                            const json = await res.json();
 
-            <Select onValueChange={(v) => { setTatFilter(v); setPage(1); }} value={tatFilter}>
-              <SelectTrigger><SelectValue placeholder="TAT" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All</SelectItem>
-                <SelectItem value="warning">Warning</SelectItem>
-                <SelectItem value="critical">Critical</SelectItem>
-                <SelectItem value="very critical">Very Critical</SelectItem>
-              </SelectContent>
-            </Select>
+                            if (!json?.data?.[0]?.label) {
+                              toast.error(json?.error?.message || "DTDC label not available");
+                              return;
+                            }
 
-            <div className="ml-auto flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">Page size</span>
-              <Input type="number" value={pageSize} onChange={(e) => { setPageSize(Math.max(5, Number(e.target.value) || DEFAULT_PAGE_SIZE)); setPage(1); }} className="w-20" />
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+                            const dtdcBase64 = json.data[0].label;
 
-      {/* Table */}
-      <Card>
-        <CardContent className="p-0">
-          <ScrollArea>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>AWB</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Booked</TableHead>
-                  <TableHead>Last Update</TableHead>
-                  <TableHead>Origin</TableHead>
-                  <TableHead>Destination</TableHead>
-                  <TableHead>TAT</TableHead>
-                  <TableHead>Movement</TableHead>
-                  <TableHead>Timeline</TableHead>
-                  <TableHead>Details</TableHead>
-                  <TableHead>Retry</TableHead>
-                </TableRow>
-              </TableHeader>
+                            // STEP 2: Generate Custom Label
+                            const customPdf = await generateCustomLabel({
+                              awb: r.awb,
+                              company: "Masala Store Pvt Ltd",
+                              address: "Indore, Madhya Pradesh",
+                              phone: "+91 98765 43210",
+                            });
 
-              <TableBody>
-                {rows.map((r) => {
-                  const tatLabel = localComputeTAT(r);
-                  const movementLabel = localComputeMovement(r);
+                            // STEP 3: Merge Both PDFs
+                            const mergedBytes = await mergePDFs(customPdf, dtdcBase64);
 
-                  return (
-                    <TableRow key={r.awb} className={tatLabel === "Very Critical" ? "bg-red-50" : ""}>
-                      <TableCell className="font-medium">{r.awb}</TableCell>
-                      <TableCell>{r.last_status ?? "-"}</TableCell>
-                      <TableCell>{r.booked_on ?? "-"}</TableCell>
-                      <TableCell>{r.last_updated_on ?? "-"}</TableCell>
-                      <TableCell>{r.origin ?? "-"}</TableCell>
-                      <TableCell>{r.destination ?? "-"}</TableCell>
+                            // STEP 4: Trigger Download
+                            const blob = new Blob([mergedBytes], { type: "application/pdf" });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement("a");
+                            a.href = url;
+                            a.download = `LABEL_${r.awb}.pdf`;
+                            a.click();
+                            URL.revokeObjectURL(url);
 
-                      <TableCell>
-                        <Badge
-                          variant={
-                            tatLabel === "Very Critical"
-                              ? "destructive"
-                              : tatLabel === "Critical"
-                              ? "secondary"
-                              : tatLabel === "Warning"
-                              ? "outline"
-                              : "default"
+                            toast.success("Label downloaded");
+
+                          } catch (err) {
+                            console.error(err);
+                            toast.error("Failed to generate combined label");
                           }
-                        >
-                          {tatLabel}
-                        </Badge>
-                      </TableCell>
+                        }}
+                      >
+                        PDF
+                      </Button>
+                    </TableCell>
 
-                      <TableCell>
-                        <Badge
-                          variant={
-                            movementLabel === "On Time"
-                              ? "secondary"
-                              : movementLabel.includes("72")
-                              ? "destructive"
-                              : movementLabel.includes("48")
-                              ? "secondary"
-                              : movementLabel.includes("24")
-                              ? "outline"
-                              : "default"
-                          }
-                        >
-                          {movementLabel}
-                        </Badge>
-                      </TableCell>
+                    <TableCell>
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        onClick={() => retrySingle(r.awb)}
+                      >
+                        Retry
+                      </Button>
+                    </TableCell>
 
-                      <TableCell>
-                        <details>
-                          <summary className="cursor-pointer text-primary text-sm">View Timeline</summary>
-                          <div className="mt-2 text-sm">
-                            {r.timeline && r.timeline.length > 0 ? (
-                              r.timeline.map((t: any, i: number) => (
-                                <div key={i} className="mb-2">
-                                  <div className="text-xs text-muted-foreground">{t.actionDate} {t.actionTime}</div>
-                                  <div className="font-medium">{t.action}</div>
-                                  <div className="text-muted-foreground">{t.origin || t.destination}</div>
-                                  {t.remarks && <div className="text-xs text-muted-foreground">{t.remarks}</div>}
-                                </div>
-                              ))
-                            ) : (
-                              <div className="text-xs text-muted-foreground">No timeline available</div>
-                            )}
-                          </div>
-                        </details>
-                      </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </ScrollArea>
+      </CardContent>
+    </Card>
 
-                      <TableCell>
-                        <Link href={`/admin/dtdc/${encodeURIComponent(r.awb)}`}>
-                          <Button size="sm" variant="outline">View Details</Button>
-                        </Link>
-                      </TableCell>
-
-                      <TableCell>
-                        <Button size="sm" variant="destructive" onClick={() => retrySingle(r.awb)}>Retry</Button>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </ScrollArea>
-        </CardContent>
-      </Card>
-
-      {/* Pagination */}
-      <div className="flex items-center justify-between">
-        <div className="text-sm text-muted-foreground">Showing {rows.length} results — Page {page}/{totalPages}</div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="ghost" onClick={() => setPage(1)} disabled={page === 1}>First</Button>
-          <Button size="sm" variant="ghost" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}>Prev</Button>
-          <div className="px-3 py-1 border rounded">{page}</div>
-          <Button size="sm" variant="ghost" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages}>Next</Button>
-          <Button size="sm" variant="ghost" onClick={() => setPage(totalPages)} disabled={page === totalPages}>Last</Button>
-        </div>
+    {/* Pagination */}
+    <div className="flex items-center justify-between">
+      <div className="text-sm text-muted-foreground">
+        Showing {rows.length} — Page {page}/{totalPages}
+      </div>
+      <div className="flex items-center gap-2">
+        <Button size="sm" variant="ghost" onClick={() => setPage(1)} disabled={page === 1}>First</Button>
+        <Button size="sm" variant="ghost" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}>Prev</Button>
+        <div className="px-3 py-1 border rounded bg-muted/40">{page}</div>
+        <Button size="sm" variant="ghost" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages}>Next</Button>
+        <Button size="sm" variant="ghost" onClick={() => setPage(totalPages)} disabled={page === totalPages}>Last</Button>
       </div>
     </div>
-  );
+
+  </div>
+);
 }

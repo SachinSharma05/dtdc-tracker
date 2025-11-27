@@ -73,16 +73,16 @@ export default function PincodePage() {
   }
 
   return (
-    <div className="p-6 space-y-6">
-      <h1 className="text-2xl font-bold">DTDC Pincode Serviceability</h1>
+    <div className="space-y-4 px-4 md:px-2 lg:px-0 py-0">
+      <h1 className="text-2xl font-bold tracking-tight">DTDC Pincode Serviceability</h1>
 
       {/* Input Card */}
-      <Card className="p-6">
+      <Card className="p-0">
         <CardHeader>
           <CardTitle>Check Serviceability</CardTitle>
         </CardHeader>
 
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-0">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Input
               placeholder="Origin Pincode"
