@@ -34,6 +34,6 @@ export async function DELETE(req: Request) {
   const { searchParams } = new URL(req.url);
   const key = searchParams.get("key");
   if (!key) return NextResponse.json({ error: "key required" }, { status: 400 });
-  await db.delete(courierSettings).where(courierSettings.key.eq(key));
+  await db.delete(courierSettings).where(eq(courierSettings.key, key));
   return NextResponse.json({ ok: true });
 }
