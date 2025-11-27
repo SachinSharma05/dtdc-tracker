@@ -41,7 +41,7 @@ export default function CourierSettingsPage() {
 
   // Services CRUD
   async function addService() {
-    if (!svcForm.name || svcForm.base_price === "") return toast({ title: "Name and base price required", variant: "destructive" });
+    if (!svcForm.name || svcForm.base_price === "") return toast.error("Name and base price required");
     const res = await fetch("/api/settings/courier/services", { method: "POST", body: JSON.stringify(svcForm) });
     const json = await res.json();
     if (res.ok) {
