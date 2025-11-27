@@ -41,13 +41,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Service not found" }, { status: 400 });
     }
 
-    const basePrice = Number(service.base_price);
+    const basePrice = Number(service.basePrice);
 
     // Fetch weight slab
     const weightSlab = await db.query.courierWeights.findFirst({
       where: and(
-        lte(courierWeights.min_weight, weight),
-        gte(courierWeights.max_weight, weight)
+        lte(courierWeights.minWeight, weight),
+        gte(courierWeights.maxWeight, weight)
       ),
     });
 

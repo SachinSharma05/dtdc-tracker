@@ -15,19 +15,19 @@ export async function GET() {
 
 export async function POST(req: Request) {
   const body = await req.json();
-  const { name, description = "", base_price } = body;
-  if (!name || base_price == null) {
+  const { name, description = "", basePrice } = body;
+  if (!name || basePrice == null) {
     return NextResponse.json({ error: "name and base_price required" }, { status: 400 });
   }
-  const inserted = await db.insert(courierServices).values({ name, description, base_price }).returning();
+  const inserted = await db.insert(courierServices).values({ name, description, basePrice }).returning();
   return NextResponse.json(inserted[0]);
 }
 
 export async function PUT(req: Request) {
   const body = await req.json();
-  const { id, name, description, base_price } = body;
+  const { id, name, description, basePrice } = body;
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
-  await db.update(courierServices).set({ name, description, base_price }).where(eq(courierServices.id, id));
+  await db.update(courierServices).set({ name, description, basePrice }).where(eq(courierServices.id, id));
   return NextResponse.json({ ok: true });
 }
 

@@ -2,13 +2,13 @@
 import { NextResponse } from "next/server";
 import { db } from "../../../../../db";
 import { courierWeights } from "../../../../../db/schema";
-import { and, gt, lt, or, sql } from "drizzle-orm";
+import { and, gte, lte, or, sql, eq, gt, lt, ne } from "drizzle-orm";
 
 export async function GET() {
   const rows = await db
   .select()
   .from(courierWeights)
-  .orderBy(sql`${courierWeights.min_weight} ASC`);
+  .orderBy(sql`${courierWeights.minWeight} ASC`);
 
   return NextResponse.json(rows);
 }
@@ -26,16 +26,16 @@ export async function POST(req: Request) {
   // check overlap
   const overlapping = await db.select().from(courierWeights).where(
     or(
-      and(courierWeights.min_weight.lte(min_weight), courierWeights.max_weight.gt(min_weight)),
-      and(courierWeights.min_weight.lt(max_weight), courierWeights.max_weight.gte(max_weight)),
-      and(courierWeights.min_weight.gte(min_weight), courierWeights.max_weight.lte(max_weight))
+      and(lte(courierWeights.minWeight, min_weight), gt(courierWeights.maxWeight, min_weight)),
+      and(lt(courierWeights.minWeight, max_weight), gte(courierWeights.maxWeight, max_weight)),
+      and(gte(courierWeights.minWeight, min_weight), lte(courierWeights.maxWeight, max_weight))
     )
   );
   if (overlapping.length > 0) {
     return NextResponse.json({ error: "Weight slab overlaps with existing slab" }, { status: 400 });
   }
 
-  const inserted = await db.insert(courierWeights).values({ min_weight, max_weight, price }).returning();
+  const inserted = await db.insert(courierWeights).values({ minWeight: min_weight, maxWeight: max_weight, price }).returning();
   return NextResponse.json(inserted[0]);
 }
 
@@ -52,11 +52,11 @@ export async function PUT(req: Request) {
   // check overlap excluding current id
   const overlapping = await db.select().from(courierWeights).where(
     and(
-      courierWeights.id.notEq(id),
+      ne(courierWeights.id, id),
       or(
-        and(courierWeights.min_weight.lte(min_weight), courierWeights.max_weight.gt(min_weight)),
-        and(courierWeights.min_weight.lt(max_weight), courierWeights.max_weight.gte(max_weight)),
-        and(courierWeights.min_weight.gte(min_weight), courierWeights.max_weight.lte(max_weight))
+        and(lte(courierWeights.minWeight, min_weight), gt(courierWeights.maxWeight, min_weight)),
+        and(lt(courierWeights.minWeight, max_weight), gte(courierWeights.maxWeight, max_weight)),
+        and(gte(courierWeights.minWeight, min_weight), lte(courierWeights.maxWeight, max_weight))
       )
     )
   );
@@ -64,7 +64,7 @@ export async function PUT(req: Request) {
     return NextResponse.json({ error: "Weight slab overlaps with existing slab" }, { status: 400 });
   }
 
-  await db.update(courierWeights).set({ min_weight, max_weight, price }).where(courierWeights.id.eq(id));
+  await db.update(courierWeights).set({ minWeight: min_weight, maxWeight: max_weight, price }).where(eq(courierWeights.id, id));
   return NextResponse.json({ ok: true });
 }
 
@@ -72,6 +72,6 @@ export async function DELETE(req: Request) {
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
-  await db.delete(courierWeights).where(courierWeights.id.eq(Number(id)));
+  await db.delete(courierWeights).where(eq(courierWeights.id, Number(id)));
   return NextResponse.json({ ok: true });
 }
