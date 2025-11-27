@@ -124,7 +124,9 @@ export default function BulkBookingPage() {
     });
 
     setPreview(rows);
-    toast({ title: `Loaded ${rows.length} rows`, description: "Preview shows parsed data" });
+    toast( 
+      `Loaded ${rows.length} rows, Preview shows parsed data`
+    );
   }
 
   // fill/generate reference numbers for rows with empty ref
