@@ -1,22 +1,21 @@
 import { PDFDocument } from "pdf-lib";
 
-export async function mergePDFs(customPdf: Uint8Array, dtdcBase64: string) {
+export async function mergePDFs(customPdf: Uint8Array, dtdcPdf: Uint8Array) {
+  // Load PDFs
   const customDoc = await PDFDocument.load(customPdf);
+  const dtdcDoc = await PDFDocument.load(dtdcPdf);
 
-  const dtdcPdfBytes = Uint8Array.from(
-    atob(dtdcBase64),
-    (c) => c.charCodeAt(0)
-  );
-
-  const dtdcDoc = await PDFDocument.load(dtdcPdfBytes);
-
+  // Create merged PDF
   const merged = await PDFDocument.create();
 
-  const [customPage] = await merged.copyPages(customDoc, [0]);
-  const [dtdcPage] = await merged.copyPages(dtdcDoc, [0]);
+  // Copy first page of custom label
+  const customPages = await merged.copyPages(customDoc, [0]);
+  merged.addPage(customPages[0]);
 
-  merged.addPage(customPage);
-  merged.addPage(dtdcPage);
+  // Copy first page of DTDC label
+  const dtdcPages = await merged.copyPages(dtdcDoc, [0]);
+  merged.addPage(dtdcPages[0]);
 
+  // Return merged PDF bytes
   return await merged.save();
 }

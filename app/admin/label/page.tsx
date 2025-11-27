@@ -48,10 +48,13 @@ export default function GenerateLabelPage() {
       });
 
       // Step 3: Merge PDFs
-      const mergedPdfBytes = await mergePDFs(customPdf, dtdcBase64);
+      const mergedPdfBytes = await mergePDFs(
+        new Uint8Array(customPdf),
+        new Uint8Array(dtdcBase64)
+      );
 
       // Step 4: Download Final Combined PDF
-      const blob = new Blob([mergedPdfBytes], { type: "application/pdf" });
+      const blob = new Blob([new Uint8Array(mergedPdfBytes)], { type: "application/pdf" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
