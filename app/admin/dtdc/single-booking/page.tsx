@@ -30,7 +30,7 @@ export default function SingleBookingPage() {
   }
 
   // Auto-fetch city/state based on pincode
-  async function fetchPincodeDetails(pin, type) {
+  async function fetchPincodeDetails(pin: string, type: "origin" | "dest") {
   if (!pin || pin.length < 6) return;
 
     const res = await fetch(`/api/pincode?pin=${pin}`);
