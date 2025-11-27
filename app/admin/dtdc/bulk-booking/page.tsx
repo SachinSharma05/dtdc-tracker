@@ -124,7 +124,7 @@ export default function BulkBookingPage() {
     });
 
     setPreview(rows);
-    toast( 
+    toast.success( 
       `Loaded ${rows.length} rows, Preview shows parsed data`
     );
   }
@@ -188,14 +188,14 @@ export default function BulkBookingPage() {
   // main submit: chunk in 20, POST sequentially and update preview status
   async function handleSubmit() {
     if (!preview.length) {
-      toast({ title: "No data", description: "Please upload a CSV first", variant: "destructive" });
+      toast.error("No data, Please upload a CSV first");
       return;
     }
 
     // check if any errors exist
     const hasErrors = preview.some((p) => p.errors.length > 0);
     if (hasErrors) {
-      toast({ title: "Validation errors", description: "Fix CSV rows marked with errors first", variant: "destructive" });
+      toast.error("Validation errors, Fix CSV rows marked with errors first");
       return;
     }
 
@@ -283,7 +283,7 @@ export default function BulkBookingPage() {
     }
 
     setUploading(false);
-    toast({ title: "Upload complete", description: `Processed ${items.length} consignments` });
+    toast.success(`Upload complete, Processed ${items.length} consignments`);
   }
 
   return (
