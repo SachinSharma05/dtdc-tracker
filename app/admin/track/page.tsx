@@ -719,10 +719,13 @@ export default function TrackPage() {
                             });
 
                             // STEP 3: Merge Both PDFs
-                            const mergedBytes = await mergePDFs(customPdf, dtdcBase64);
+                            const mergedBytes = await mergePDFs(
+                              new Uint8Array(customPdf),
+                              new Uint8Array(dtdcBase64)
+                            );
 
                             // STEP 4: Trigger Download
-                            const blob = new Blob([mergedBytes], { type: "application/pdf" });
+                            const blob = new Blob([new Uint8Array(mergedBytes)], { type: "application/pdf" });
                             const url = URL.createObjectURL(blob);
                             const a = document.createElement("a");
                             a.href = url;
